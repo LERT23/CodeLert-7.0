@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function() {
+        try {
+          var origFetch = (typeof window !== 'undefined' && window.fetch) ? window.fetch.bind(window) : null;
+          var currentFetch = origFetch;
+          Object.defineProperty(window, 'fetch', {
+            get: function() {
+              return typeof currentFetch === 'function' ? currentFetch.bind(window) : (origFetch || window.fetch);
+            },
+            set: function(fn) {
+              currentFetch = typeof fn === 'function' ? fn.bind(window) : fn;
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {}
+      })();
+    </script>
+    <title>CodeLert 7.0</title>
+    <meta name="description" content="A comprehensive code development environment with integrated AI, project management, and a customizable interface." />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <meta property="og:title" content="My Google AI Studio App" />
+    <meta property="og:description" content="An application built with Google AI Studio." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

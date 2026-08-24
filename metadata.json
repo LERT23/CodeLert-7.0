@@ -1,0 +1,6 @@
+{
+  "name": "CodeLert 7.0",
+  "description": "A comprehensive code development environment with integrated AI, project management, and a customizable interface.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
