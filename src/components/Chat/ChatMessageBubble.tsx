@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FileCode, Copy, Check, Reply, Loader2, RefreshCw, AlertTriangle, FolderPlus, Trash2, Edit2, Image as ImageIcon, Eye } from 'lucide-react';
+import { FileCode, Copy, Check, Reply, Loader2, RefreshCw, AlertTriangle, FolderPlus, Trash2, Edit2, Image as ImageIcon, Eye, Globe, ExternalLink } from 'lucide-react';
 import { marked } from 'marked';
 import { ChatMessage, FileChange, User, ThemeSettings, ChatAttachment } from '../../types.ts';
 import { t } from '../../i18n.ts';
@@ -250,13 +250,13 @@ export const ChatMessageBubble: React.FC<{
           >
             {/* Header with CodeLert 7.0 Badge & Delete button */}
             <div className="flex items-center justify-between gap-2 mb-2 pb-1.5 border-b border-theme-border/60">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-bold text-theme-accent text-sm">
                   {msg.role === 'model' ? 'CodeLert 7.0' : user?.name || 'User'}
                 </span>
                 {msg.role === 'model' && (
                   <span className="text-[10px] px-1.5 py-0.2 rounded bg-theme-base text-theme-muted border border-theme-border">
-                    AI Assistant
+                    {msg.modelUsed || 'AI Assistant'}
                   </span>
                 )}
               </div>
@@ -312,6 +312,31 @@ export const ChatMessageBubble: React.FC<{
                 </span>
               )}
             </div>
+
+            {/* Google Search Grounding Citations */}
+            {msg.groundingSources && msg.groundingSources.length > 0 && (
+              <div className="mt-3 pt-2.5 border-t border-theme-border/40 flex flex-col gap-1.5 relative z-10">
+                <div className="flex items-center gap-1.5 text-xs text-theme-muted font-bold">
+                  <Globe size={13} className="text-blue-400" />
+                  <span>{t[lang].searchSources || 'Google Search Sources'}:</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {msg.groundingSources.map((source, sIdx) => (
+                    <a
+                      key={sIdx}
+                      href={source.uri}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-theme-base hover:bg-theme-hover border border-theme-border text-[11px] text-blue-400 hover:text-blue-300 transition-colors truncate max-w-[280px]"
+                      title={source.title || source.uri}
+                    >
+                      <span className="truncate">{source.title || source.uri}</span>
+                      <ExternalLink size={10} className="shrink-0 opacity-70" />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {hasFileOpError && !msg.isTyping && (
               <div className="mt-2.5 p-2.5 bg-red-900/30 border border-red-800/50 rounded-lg flex flex-col gap-2">

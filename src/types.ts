@@ -14,6 +14,11 @@ export interface ChatAttachment {
   mimeType: string;
 }
 
+export interface GroundingSource {
+  title?: string;
+  uri: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'model';
@@ -23,6 +28,8 @@ export interface ChatMessage {
   applied?: boolean;
   isTyping?: boolean;
   replyToId?: string;
+  groundingSources?: GroundingSource[];
+  modelUsed?: string;
 }
 
 export interface User {
@@ -41,6 +48,8 @@ export interface ThemeSettings {
   theme: ThemeColor;
   language: 'UA' | 'EN';
   fontFamily: string;
+  aiModel?: 'gemini-3.5-flash' | 'gemini-3.1-pro-preview' | 'gemini-3.1-flash-lite' | 'auto';
+  enableSearchGrounding?: boolean;
   contextMode?: 'selected' | 'all';
   newYearMode?: boolean;
   autoBackup?: boolean;

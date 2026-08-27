@@ -1,4 +1,10 @@
-import { ChatMessage, ChatAttachment, ContextFile, ThemeSettings } from '../types.ts';
+import { ChatMessage, ChatAttachment, ContextFile, ThemeSettings, GroundingSource } from '../types.ts';
+
+export interface StreamChunk {
+  text?: string;
+  groundingSources?: GroundingSource[];
+  modelUsed?: string;
+}
 
 export const upscaleImage = async (base64Data: string, mimeType: string): Promise<string> => {
   try {
@@ -33,7 +39,7 @@ export const generateChatStreamResponse = async function* (
   language: 'UA' | 'EN' = 'EN',
   settings?: ThemeSettings,
   editHistory?: string
-) {
+): AsyncGenerator<StreamChunk, void, unknown> {
   try {
     const response = await fetch('/api/gemini/stream', {
       method: 'POST',
@@ -93,8 +99,12 @@ export const generateChatStreamResponse = async function* (
           if (parsed.error) {
             throw new Error(parsed.error);
           }
-          if (parsed.text) {
-            yield parsed.text;
+          if (parsed.text || parsed.groundingSources || parsed.modelUsed) {
+            yield {
+              text: parsed.text,
+              groundingSources: parsed.groundingSources,
+              modelUsed: parsed.modelUsed
+            };
           }
         } catch (e: any) {
           if (e.message && !e.message.includes('JSON')) {
@@ -109,7 +119,13 @@ export const generateChatStreamResponse = async function* (
       if (dataStr !== '[DONE]') {
         try {
           const parsed = JSON.parse(dataStr);
-          if (parsed.text) yield parsed.text;
+          if (parsed.text || parsed.groundingSources || parsed.modelUsed) {
+            yield {
+              text: parsed.text,
+              groundingSources: parsed.groundingSources,
+              modelUsed: parsed.modelUsed
+            };
+          }
         } catch {}
       }
     }

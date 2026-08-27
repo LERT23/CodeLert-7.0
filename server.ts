@@ -13,7 +13,14 @@ let aiClient: GoogleGenAI | null = null;
 function getAi(): GoogleGenAI {
   if (!aiClient) {
     const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-    aiClient = new GoogleGenAI({ apiKey });
+    aiClient = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build'
+        }
+      }
+    });
   }
   return aiClient;
 }
@@ -50,39 +57,78 @@ function formatErrorMessage(error: any): string {
       const match = raw.match(/retry in ([0-9]+(?:\.[0-9]+)?)s/i) || raw.match(/retryDelay["']?\s*:\s*["']?(\d+)/i);
       if (match && match[1]) {
         const secs = Math.ceil(parseFloat(match[1]));
-        return `Перевищено ліміт запитів безкоштовного тарифу. Будь ласка, зачекайте ${secs} сек. і спробуйте знову.`;
+        return `Перевищено ліміт запитів безкоштовного тарифу (Free Tier Quota). Будь ласка, зачекайте ${secs} сек. або оберіть іншу модель у Налаштуваннях.`;
       }
-      return "Перевищено ліміт запитів або токенів. Будь ласка, зачекайте кілька секунд і спробуйте знову.";
+      return "Перевищено ліміт запитів або токенів безкоштовного тарифу. Будь ласка, зачекайте кілька секунд і спробуйте знову.";
     }
   }
   return String(raw || "Помилка з'єднання з ШІ.");
 }
 
-async function generateStreamWithFallback(ai: GoogleGenAI, configPayload: any) {
-  const models = ['gemini-3.7-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+async function generateStreamWithFallback(
+  ai: GoogleGenAI, 
+  primaryModel: string, 
+  configPayload: any, 
+  enableSearch: boolean = true
+) {
+  // Ordered fallback models prioritising robust, modern models
+  const candidateModels = [
+    primaryModel,
+    'gemini-3.5-flash',
+    'gemini-3.7-flash',
+    'gemini-flash-latest',
+    'gemini-3.1-pro-preview',
+    'gemini-3.1-flash-lite'
+  ].filter((m, idx, arr) => arr.indexOf(m) === idx);
+
   let lastError: any = null;
 
-  for (const model of models) {
+  for (const model of candidateModels) {
+    const configForModel: any = { ...configPayload.config };
+
+    // Build tools for the model
+    const tools: any[] = [];
+    if (enableSearch && (model === 'gemini-3.5-flash' || model === 'gemini-3.7-flash' || model === 'gemini-flash-latest' || model === 'gemini-3.1-pro-preview')) {
+      tools.push({ googleSearch: {} });
+    }
+    tools.push({
+      functionDeclarations: [{
+        name: 'generate_image',
+        description: 'Generates an image based on a detailed text prompt. Use this when the user asks to draw, create, or generate an image or picture.',
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            prompt: { type: Type.STRING, description: 'Detailed prompt for the image generation in English.' }
+          },
+          required: ['prompt']
+        }
+      }]
+    });
+    configForModel.tools = tools;
+
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         const stream = await ai.models.generateContentStream({
           ...configPayload,
-          model
+          model,
+          config: configForModel
         });
-        return stream;
+        return { stream, modelUsed: model };
       } catch (err: any) {
         lastError = err;
         const msg = String(err?.message || err || '');
-        const isQuotaHardLimit = msg.includes('PerDay') || (msg.includes('retry in') && parseFloat((msg.match(/retry in ([0-9.]+)s/)?.[1] || '0')) > 8);
-        
-        // If it's a hard per-day or long-delay quota for this specific model, immediately switch to the next fallback model
+        console.warn(`Model ${model} attempt ${attempt} failed:`, msg);
+
+        // Check if error is 429 quota exhaustion or long delay
+        const isQuotaHardLimit = msg.includes('PerDay') || msg.includes('RESOURCE_EXHAUSTED') || (msg.includes('retry in') && parseFloat((msg.match(/retry in ([0-9.]+)s/)?.[1] || '0')) > 8);
         if (isQuotaHardLimit) {
+          // Immediately switch to next candidate model
           break;
         }
 
-        const isTransient = msg.includes('503') || msg.includes('429') || msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('Too Many Requests');
+        const isTransient = msg.includes('503') || msg.includes('429') || msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('Too Many Requests');
         if (isTransient && attempt < 2) {
-          await sleep(1000 * attempt + Math.floor(Math.random() * 400));
+          await sleep(800 * attempt + Math.floor(Math.random() * 300));
           continue;
         }
         break;
@@ -283,28 +329,48 @@ app.post('/api/gemini/stream', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
-    const responseStream = await generateStreamWithFallback(ai, {
-      contents: contents,
-      config: {
-        systemInstruction: systemInstruction,
-        maxOutputTokens: 8192,
-        tools: [{
-          functionDeclarations: [{
-            name: 'generate_image',
-            description: 'Generates an image based on a detailed text prompt. Use this when the user asks to draw, create, or generate an image or picture.',
-            parameters: {
-              type: Type.OBJECT,
-              properties: {
-                prompt: { type: Type.STRING, description: 'Detailed prompt for the image generation in English.' }
-              },
-              required: ['prompt']
-            }
-          }]
-        }]
-      }
-    });
+    // Determine target primary model
+    let chosenModel = 'gemini-3.5-flash';
+    if (settings?.aiModel === 'gemini-3.1-pro-preview') {
+      chosenModel = 'gemini-3.1-pro-preview';
+    } else if (settings?.aiModel === 'gemini-3.1-flash-lite') {
+      chosenModel = 'gemini-3.1-flash-lite';
+    } else if (settings?.aiModel === 'gemini-3.5-flash') {
+      chosenModel = 'gemini-3.5-flash';
+    } else {
+      // Auto selection: if prompt indicates complex coding/math/architecture
+      const isComplexTask = newPrompt.length > 2500 || /refactor|architect|algorithm|performance|optimize|security audit/i.test(newPrompt);
+      chosenModel = isComplexTask ? 'gemini-3.1-pro-preview' : 'gemini-3.5-flash';
+    }
+
+    const enableSearch = settings?.enableSearchGrounding !== false;
+
+    const { stream: responseStream, modelUsed } = await generateStreamWithFallback(
+      ai,
+      chosenModel,
+      {
+        contents: contents,
+        config: {
+          systemInstruction: systemInstruction,
+          maxOutputTokens: 8192,
+        }
+      },
+      enableSearch
+    );
+
+    res.write(`data: ${JSON.stringify({ modelUsed })}\n\n`);
 
     for await (const chunk of responseStream) {
+      // Stream Google Search grounding citations if present
+      if (chunk.candidates?.[0]?.groundingMetadata?.groundingChunks) {
+        const sources = chunk.candidates[0].groundingMetadata.groundingChunks
+          .map((c: any) => c.web ? { title: c.web.title || c.web.uri, uri: c.web.uri } : null)
+          .filter(Boolean);
+        if (sources.length > 0) {
+          res.write(`data: ${JSON.stringify({ groundingSources: sources })}\n\n`);
+        }
+      }
+
       if (chunk.functionCalls && chunk.functionCalls.length > 0) {
         const call = chunk.functionCalls[0];
         if (call.name === 'generate_image') {

@@ -326,31 +326,45 @@ export const Chat: React.FC<ChatProps> = ({
         if (stopGenerationRef.current) {
           break;
         }
-        finalModelText += chunk;
-        setHistory(prev => prev.map(m => m.id === modelMessageId ? { ...m, text: finalModelText } : m));
-        
-        const imgMatch = chunk.match(/!\[.*?\]\((data:image\/.*?;base64,.*?)\)/);
-        if (imgMatch) {
-          onAddTempFile(`generated/image_${Date.now()}.jpg`, imgMatch[1]);
+
+        if (chunk.modelUsed) {
+          setHistory(prev => prev.map(m => m.id === modelMessageId ? { ...m, modelUsed: chunk.modelUsed } : m));
+        }
+
+        if (chunk.groundingSources && chunk.groundingSources.length > 0) {
+          setHistory(prev => prev.map(m => m.id === modelMessageId ? { 
+            ...m, 
+            groundingSources: [...(m.groundingSources || []), ...chunk.groundingSources!] 
+          } : m));
+        }
+
+        if (chunk.text) {
+          finalModelText += chunk.text;
+          setHistory(prev => prev.map(m => m.id === modelMessageId ? { ...m, text: finalModelText } : m));
+          
+          const imgMatch = chunk.text.match(/!\[.*?\]\((data:image\/.*?;base64,.*?)\)/);
+          if (imgMatch) {
+            onAddTempFile(`generated/image_${Date.now()}.jpg`, imgMatch[1]);
+          }
         }
       }
       
       setHistory(prev => prev.map(m => m.id === modelMessageId ? { ...m, isTyping: false } : m));
 
-      // --- VERIFICATION STEP ---
-      if (settings.enableAiVerification && !stopGenerationRef.current) {
+      // --- VERIFICATION STEP (Optimized to prevent 429 Rate Limits) ---
+      if (settings.enableAiVerification && !stopGenerationRef.current && finalModelText.trim().length > 0) {
         setIsVerifying(true);
         
         try {
           const verifyPrompt = `Проаналізуй свою попередню відповідь.
 1. Якщо ти мав надати код, чи використав ти правильний формат [FILE: шлях] або [REPLACE: шлях]?
-2. Чи немає в коді синтаксичних помилок?
-3. Чи не видалив ти випадково важливий функціонал з попередньої версії коду при застосуванні змін?
+2. Чи немає в коді явних синтаксичних помилок?
+3. Чи не видалив ти випадково важливий функціонал при застосуванні змін?
 Якщо є помилки, відсутній правильний формат, або втрачено функціонал, напиши повну виправлену фінальну відповідь з правильними тегами.
 Якщо все абсолютно ідеально і виправлень не потрібно, напиши ТІЛЬКИ слово 'ALL_OK' без жодних інших символів.`;
 
+          // Lean verification context to stay strictly within free-tier quota limits
           const verifyHistory = [
-            ...history,
             userMessage,
             { ...initialModelMessage, text: finalModelText, isTyping: false }
           ];
@@ -359,8 +373,8 @@ export const Chat: React.FC<ChatProps> = ({
             verifyHistory,
             verifyPrompt,
             [],
-            contextFiles,
-            projectStructure,
+            [], // Minimal context files to avoid quota exhaustion
+            '',
             lang,
             settings,
             editHistoryStr
@@ -372,7 +386,8 @@ export const Chat: React.FC<ChatProps> = ({
 
           for await (const chunk of verifyStream) {
             if (stopGenerationRef.current) break;
-            verifyText += chunk;
+            const textChunk = chunk.text || '';
+            verifyText += textChunk;
             
             if (!isReplacingOriginal) {
               if (verifyText.length >= 8) {
@@ -380,7 +395,7 @@ export const Chat: React.FC<ChatProps> = ({
                   isAllOk = true;
                   break;
                 } else {
-                  // Found mistakes, start replacing the model message text in place so only one corrected message remains!
+                  // Found mistakes, start replacing the model message text in place
                   isReplacingOriginal = true;
                   setHistory(prev => prev.map(m => m.id === modelMessageId ? { ...m, text: verifyText, isTyping: true } : m));
                 }
@@ -405,15 +420,9 @@ export const Chat: React.FC<ChatProps> = ({
             }
           }
         } catch (verifyError) {
-          console.error("Verification error:", verifyError);
-          // Fallback to original text auto-apply if verification fails
-          if (finalModelText.includes('[AUTO_APPLY]')) {
-            const changes = parseChangesFromText(finalModelText);
-            if (changes.length > 0) {
-              onApplyCode(changes);
-              setHistory(prev => prev.map(m => m.id === modelMessageId ? { ...m, applied: true } : m));
-            }
-          }
+          console.warn("Verification non-fatal notice (skipping self-check):", verifyError);
+          // Keep original response intact if verification runs into a quota or network issue
+          setHistory(prev => prev.map(m => m.id === modelMessageId ? { ...m, isTyping: false } : m));
         } finally {
           setIsVerifying(false);
         }

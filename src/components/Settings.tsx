@@ -99,10 +99,46 @@ export const Settings: React.FC<SettingsProps> = ({
         {/* AI Modes with Hover Tooltips */}
         <div className="p-3 bg-theme-panel rounded-lg border border-theme-border space-y-2.5">
           <div className="text-xs font-bold text-theme-muted uppercase tracking-wider mb-1">
-            Режими ШІ / AI Modes
+            {t[lang].aiModel || 'Модель ШІ'} & {t[lang].searchGrounding || 'Google Search'}
           </div>
 
-          <div className="flex items-center justify-between group">
+          {/* AI Model Selector */}
+          <div>
+            <label className="block text-xs font-semibold text-theme-text mb-1">
+              {t[lang].aiModel || 'Модель ШІ / AI Model'}
+            </label>
+            <select
+              value={settings.aiModel || 'auto'}
+              onChange={(e) => setSettings({ ...settings, aiModel: e.target.value as any })}
+              className="w-full bg-theme-header border border-theme-border text-theme-text rounded p-2 outline-none focus:border-theme-accent text-xs"
+            >
+              <option value="auto">✨ {t[lang].modelAuto || 'Автоматичний вибір (Рекомендовано)'}</option>
+              <option value="gemini-3.5-flash">⚡ {t[lang].modelFlash || 'gemini-3.5-flash (Універсальна + Google Search)'}</option>
+              <option value="gemini-3.1-pro-preview">🧠 {t[lang].modelPro || 'gemini-3.1-pro-preview (Складні задачі та кодинг)'}</option>
+              <option value="gemini-3.1-flash-lite">🚀 {t[lang].modelLite || 'gemini-3.1-flash-lite (Швидка)'}</option>
+            </select>
+          </div>
+
+          {/* Google Search Grounding Toggle */}
+          <div className="flex items-center justify-between group pt-1 border-t border-theme-border/50">
+            <label className="flex items-center gap-2 font-medium text-theme-text cursor-pointer hover:text-theme-accent transition-colors">
+              <input 
+                type="checkbox" 
+                checked={settings.enableSearchGrounding !== false}
+                onChange={(e) => setSettings({ ...settings, enableSearchGrounding: e.target.checked })}
+                className="accent-theme-accent w-4 h-4 cursor-pointer"
+              />
+              <span className="text-blue-400 font-semibold">{t[lang].searchGrounding || 'Google Search Web Grounding'}</span>
+            </label>
+            <div className="relative group/tooltip">
+              <HelpCircle size={14} className="text-blue-400 hover:text-blue-300 transition-colors cursor-help" />
+              <div className="absolute right-0 bottom-full mb-2 w-64 p-2.5 bg-theme-header text-theme-text text-xs rounded-md shadow-2xl opacity-0 group-hover/tooltip:opacity-100 pointer-events-none transition-opacity z-50 border border-theme-border leading-snug">
+                {t[lang].searchGroundingTooltip || 'ШІ використовує актуальні дані з інтернету через Google Search Grounding для надання найновішої інформації.'}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between group pt-1 border-t border-theme-border/50">
             <label className="flex items-center gap-2 font-medium text-theme-text cursor-pointer hover:text-theme-accent transition-colors">
               <input 
                 type="checkbox" 
