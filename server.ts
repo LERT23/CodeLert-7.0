@@ -71,15 +71,20 @@ async function generateStreamWithFallback(
   configPayload: any, 
   enableSearch: boolean = true
 ) {
-  // Ordered fallback models prioritising robust, modern models
-  const candidateModels = [
-    primaryModel,
-    'gemini-3.5-flash',
-    'gemini-3.7-flash',
-    'gemini-flash-latest',
-    'gemini-3.1-pro-preview',
-    'gemini-3.1-flash-lite'
-  ].filter((m, idx, arr) => arr.indexOf(m) === idx);
+  // Define fallback models based on primary request
+  let candidateModels: string[];
+  if (primaryModel === 'gemini-3.1-pro-preview') {
+    // If explicitly requested Pro, try Pro, then fallback to high-capacity Flash models
+    candidateModels = ['gemini-3.1-pro-preview', 'gemini-3.5-flash', 'gemini-3.8-flash', 'gemini-3.1-flash-lite'];
+  } else if (primaryModel === 'gemini-3.1-flash-lite') {
+    candidateModels = ['gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-3.8-flash'];
+  } else {
+    // Standard / Auto / Flash default (gemini-3.5-flash has Search Grounding + generous quota)
+    candidateModels = ['gemini-3.5-flash', 'gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+  }
+
+  // Remove duplicates while preserving order
+  candidateModels = candidateModels.filter((m, idx, arr) => arr.indexOf(m) === idx);
 
   let lastError: any = null;
 
@@ -88,7 +93,7 @@ async function generateStreamWithFallback(
 
     // Build tools for the model
     const tools: any[] = [];
-    if (enableSearch && (model === 'gemini-3.5-flash' || model === 'gemini-3.7-flash' || model === 'gemini-flash-latest' || model === 'gemini-3.1-pro-preview')) {
+    if (enableSearch && (model === 'gemini-3.5-flash' || model === 'gemini-3.8-flash' || model === 'gemini-flash-latest' || model === 'gemini-3.1-pro-preview')) {
       tools.push({ googleSearch: {} });
     }
     tools.push({
@@ -117,16 +122,29 @@ async function generateStreamWithFallback(
       } catch (err: any) {
         lastError = err;
         const msg = String(err?.message || err || '');
-        console.warn(`Model ${model} attempt ${attempt} failed:`, msg);
+        console.warn(`Model ${model} attempt ${attempt} notice:`, msg.substring(0, 180));
 
-        // Check if error is 429 quota exhaustion or long delay
-        const isQuotaHardLimit = msg.includes('PerDay') || msg.includes('RESOURCE_EXHAUSTED') || (msg.includes('retry in') && parseFloat((msg.match(/retry in ([0-9.]+)s/)?.[1] || '0')) > 8);
-        if (isQuotaHardLimit) {
-          // Immediately switch to next candidate model
+        // If Pro model on free tier (limit: 0), immediately advance to flash models without waiting
+        if (msg.includes('limit: 0') || (msg.includes('gemini-3.1-pro') && msg.includes('RESOURCE_EXHAUSTED'))) {
           break;
         }
 
-        const isTransient = msg.includes('503') || msg.includes('429') || msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('Too Many Requests');
+        // Check for retry delay
+        const match = msg.match(/retry in ([0-9]+(?:\.[0-9]+)?)s/i) || msg.match(/retryDelay["']?\s*:\s*["']?(\d+)/i);
+        const retrySecs = match && match[1] ? parseFloat(match[1]) : 0;
+
+        // If short retry delay <= 2.5 seconds and first attempt, sleep and retry once
+        if (retrySecs > 0 && retrySecs <= 2.5 && attempt < 2) {
+          await sleep(Math.ceil(retrySecs * 1000) + 300);
+          continue;
+        }
+
+        // If hard per-day or 429 quota exhaustion, don't repeat same model
+        if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429') || msg.includes('PerDay')) {
+          break;
+        }
+
+        const isTransient = msg.includes('503') || msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('Too Many Requests');
         if (isTransient && attempt < 2) {
           await sleep(800 * attempt + Math.floor(Math.random() * 300));
           continue;
@@ -231,18 +249,29 @@ app.post('/api/gemini/stream', async (req, res) => {
     }
 
     if (editHistory && editHistory !== '[]') {
-      systemInstruction += `\n\nІСТОРІЯ ОСТАННІХ ЗМІН (для уникнення дублювання):\nОсь останні правки, які ти вже вніс. Не повторюй їх:\n${editHistory}\n`;
+      const safeHistory = editHistory.length > 2000 ? editHistory.slice(0, 2000) + '\n... [історію скорочено]' : editHistory;
+      systemInstruction += `\n\nІСТОРІЯ ОСТАННІХ ЗМІН (для уникнення дублювання):\nОсь останні правки, які ти вже вніс. Не повторюй їх:\n${safeHistory}\n`;
     }
 
     if (projectStructure) {
-      systemInstruction += `\n\nОсь поточна структура файлів та папок проекту:\n${projectStructure}\n`;
+      const safeStructure = projectStructure.length > 2500 ? projectStructure.slice(0, 2500) + '\n... [структуру скорочено]' : projectStructure;
+      systemInstruction += `\n\nОсь поточна структура файлів та папок проекту:\n${safeStructure}\n`;
     }
 
     const currentParts: any[] = [];
 
     if (contextFiles.length > 0) {
       systemInstruction += '\n\nОсь поточний контекст проекту (вміст файлів):\n';
-      contextFiles.forEach((f: any) => {
+      let totalContextChars = 0;
+      const MAX_TOTAL_CONTEXT = 32000;
+      const MAX_FILE_CHARS = 9000;
+
+      for (const f of contextFiles) {
+        if (totalContextChars >= MAX_TOTAL_CONTEXT) {
+          systemInstruction += `\n[Примітка: інші файли не включено для економії токенів ШІ]\n`;
+          break;
+        }
+
         if (f.isImage && f.content) {
           const parts = f.content.split(',');
           const base64 = parts[1];
@@ -259,19 +288,40 @@ app.post('/api/gemini/stream', async (req, res) => {
           }
         } else {
           let fileText = String(f.content || '');
-          if (fileText.length > 50000) {
-            fileText = fileText.slice(0, 50000) + '\n... [Вміст обрізано для оптимізації розміру токенів]';
+          if (fileText.length > MAX_FILE_CHARS) {
+            // Keep head and tail of file for context
+            fileText = fileText.slice(0, 4200) + '\n\n... [частину коду пропущено для економії токенів ШІ] ...\n\n' + fileText.slice(-4200);
           }
+          const remainingBudget = MAX_TOTAL_CONTEXT - totalContextChars;
+          if (fileText.length > remainingBudget) {
+            fileText = fileText.slice(0, remainingBudget) + '\n... [вміст скорочено за лімітом контексту]';
+          }
+          totalContextChars += fileText.length;
           systemInstruction += `\n--- Файл: ${f.name} ---\n${fileText}\n`;
         }
-      });
+      }
     }
 
-    const recentMessages = messages.length > 12 ? messages.slice(-12) : messages;
+    // Keep conversation history compact to prevent exceeding 250k tokens/min limit
+    const recentMessages = messages.length > 6 ? messages.slice(-6) : messages;
 
-    const contents: any[] = recentMessages.map((msg: any) => {
+    const contents: any[] = recentMessages.map((msg: any, idx: number) => {
       const parts: any[] = [];
       let text = msg.text || ' ';
+
+      // Prune massive code blocks from older assistant turns
+      const isOlderAssistantTurn = msg.role === 'model' && idx < recentMessages.length - 2;
+      if (isOlderAssistantTurn && text.length > 1500) {
+        text = text.replace(/```[\s\S]*?```/g, (codeBlock: string) => {
+          if (codeBlock.length > 400) {
+            const lines = codeBlock.split('\n');
+            const topLines = lines.slice(0, 4).join('\n');
+            const bottomLines = lines.slice(-2).join('\n');
+            return `${topLines}\n// ... [попередній код скорочено] ...\n${bottomLines}`;
+          }
+          return codeBlock;
+        });
+      }
 
       if (msg.role === 'model' && msg.applied) {
         text += '\n\n[SYSTEM: Користувач успішно застосував ці зміни до проекту.]';
@@ -301,7 +351,8 @@ app.post('/api/gemini/stream', async (req, res) => {
     if (attachments.length > 0) {
       attachments.forEach((att: any) => {
         if (att.text) {
-          attachmentsText += `\n--- Прикріплений файл: ${att.name} ---\n${att.text}\n`;
+          const safeText = att.text.length > 8000 ? att.text.slice(0, 8000) + '\n... [текст скорочено]' : att.text;
+          attachmentsText += `\n--- Прикріплений файл: ${att.name} ---\n${safeText}\n`;
         } else if (att.data) {
           const base64 = att.data.split(',')[1];
           const mimeType = getSupportedMimeType(att.mimeType);
@@ -329,7 +380,8 @@ app.post('/api/gemini/stream', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
-    // Determine target primary model
+    // Determine target primary model:
+    // Default to gemini-3.5-flash which has Search Grounding + generous quota.
     let chosenModel = 'gemini-3.5-flash';
     if (settings?.aiModel === 'gemini-3.1-pro-preview') {
       chosenModel = 'gemini-3.1-pro-preview';
@@ -338,12 +390,35 @@ app.post('/api/gemini/stream', async (req, res) => {
     } else if (settings?.aiModel === 'gemini-3.5-flash') {
       chosenModel = 'gemini-3.5-flash';
     } else {
-      // Auto selection: if prompt indicates complex coding/math/architecture
-      const isComplexTask = newPrompt.length > 2500 || /refactor|architect|algorithm|performance|optimize|security audit/i.test(newPrompt);
-      chosenModel = isComplexTask ? 'gemini-3.1-pro-preview' : 'gemini-3.5-flash';
+      // Auto selection uses gemini-3.5-flash by default (safe for free-tier quotas and supports search grounding)
+      chosenModel = 'gemini-3.5-flash';
     }
 
     const enableSearch = settings?.enableSearchGrounding !== false;
+
+    // Send initial analytical status so user visually sees the AI deliberating and analyzing
+    res.write(`data: ${JSON.stringify({ 
+      status: 'analyzing', 
+      detail: contextFiles.length > 0 
+        ? `Аналіз структури проекту та ${contextFiles.length} закріплених файлів...` 
+        : 'Аналіз структури проекту та вихідного коду...' 
+    })}\n\n`);
+
+    // Natural deliberation pause for project analysis & search preparation
+    await sleep(400);
+
+    if (enableSearch) {
+      res.write(`data: ${JSON.stringify({ 
+        status: 'searching', 
+        detail: 'Google Search: перевірка документації та актуальних рішень в мережі...' 
+      })}\n\n`);
+      await sleep(400);
+    }
+
+    res.write(`data: ${JSON.stringify({ 
+      status: 'thinking', 
+      detail: 'Обдумування архітектури та генерація безпечного коду...' 
+    })}\n\n`);
 
     const { stream: responseStream, modelUsed } = await generateStreamWithFallback(
       ai,
@@ -361,13 +436,21 @@ app.post('/api/gemini/stream', async (req, res) => {
     res.write(`data: ${JSON.stringify({ modelUsed })}\n\n`);
 
     for await (const chunk of responseStream) {
-      // Stream Google Search grounding citations if present
-      if (chunk.candidates?.[0]?.groundingMetadata?.groundingChunks) {
-        const sources = chunk.candidates[0].groundingMetadata.groundingChunks
+      // Stream Google Search grounding metadata & actual search queries if present
+      const grounding = chunk.candidates?.[0]?.groundingMetadata;
+      if (grounding) {
+        const searchQueries: string[] = grounding.webSearchQueries || [];
+        const sources = (grounding.groundingChunks || [])
           .map((c: any) => c.web ? { title: c.web.title || c.web.uri, uri: c.web.uri } : null)
           .filter(Boolean);
-        if (sources.length > 0) {
-          res.write(`data: ${JSON.stringify({ groundingSources: sources })}\n\n`);
+
+        if (searchQueries.length > 0 || sources.length > 0) {
+          res.write(`data: ${JSON.stringify({ 
+            status: 'search_completed',
+            searchQueries, 
+            groundingSources: sources,
+            detail: searchQueries.length > 0 ? `Google Search: знайдено матеріали за запитом "${searchQueries[0]}"` : undefined
+          })}\n\n`);
         }
       }
 
@@ -444,12 +527,15 @@ app.post('/api/gemini/stream', async (req, res) => {
     res.write(`data: [DONE]\n\n`);
     res.end();
   } catch (error: any) {
-    console.error('Server Gemini Stream Error:', error);
+    const rawMsg = String(error?.message || error || '');
+    const match = rawMsg.match(/retry in ([0-9]+(?:\.[0-9]+)?)s/i) || rawMsg.match(/retryDelay["']?\s*:\s*["']?(\d+)/i);
+    const retrySecs = match && match[1] ? Math.ceil(parseFloat(match[1])) : undefined;
     const errMsg = formatErrorMessage(error);
+    console.warn('Gemini Stream quota/connection notice:', errMsg);
     if (!res.headersSent) {
-      res.status(500).json({ error: errMsg });
+      res.status(500).json({ error: errMsg, retryAfter: retrySecs });
     } else {
-      res.write(`data: ${JSON.stringify({ error: errMsg })}\n\n`);
+      res.write(`data: ${JSON.stringify({ error: errMsg, retryAfter: retrySecs })}\n\n`);
       res.end();
     }
   }

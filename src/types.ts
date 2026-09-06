@@ -29,14 +29,23 @@ export interface ChatMessage {
   isTyping?: boolean;
   replyToId?: string;
   groundingSources?: GroundingSource[];
+  searchQueries?: string[];
   modelUsed?: string;
+  retryAfter?: number;
+  aiStatus?: {
+    step: 'analyzing' | 'searching' | 'thinking' | 'generating';
+    detail?: string;
+    searchQueries?: string[];
+  };
 }
 
 export interface User {
+  id?: string;
   email: string;
   name: string;
   isAdmin: boolean;
   avatar?: string;
+  photoURL?: string;
 }
 
 export type ThemeColor = 'brown' | 'black' | 'white' | 'green' | 'blue' | 'orange';
@@ -59,6 +68,8 @@ export interface ThemeSettings {
   useCustomCursor?: boolean;
   enableAnimations?: boolean;
   enableAiVerification?: boolean;
+  workspaceMode?: 'normal' | 'wide' | 'compact';
+  aiDeepThinking?: boolean;
 }
 
 export interface ProjectState {

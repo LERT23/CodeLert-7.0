@@ -1,5 +1,9 @@
-import React, { useState } from 'react';
-import { FileCode, Copy, Check, Reply, Loader2, RefreshCw, AlertTriangle, FolderPlus, Trash2, Edit2, Image as ImageIcon, Eye, Globe, ExternalLink } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  FileCode, Copy, Check, Reply, Loader2, RefreshCw, AlertTriangle, 
+  FolderPlus, Trash2, Edit2, Image as ImageIcon, Eye, Globe, ExternalLink,
+  FolderGit2, Search, Brain, Sparkles, CheckCircle2
+} from 'lucide-react';
 import { marked } from 'marked';
 import { ChatMessage, FileChange, User, ThemeSettings, ChatAttachment } from '../../types.ts';
 import { t } from '../../i18n.ts';
@@ -42,6 +46,31 @@ export const ChatMessageBubble: React.FC<{
   const [isApplying, setIsApplying] = useState(false);
   const [applyProgress, setApplyProgress] = useState(0);
   const [applyErrors, setApplyErrors] = useState<string[]>([]);
+
+  // Quota Countdown Timer
+  const initialRetrySeconds = useMemo(() => {
+    if (msg.retryAfter && msg.retryAfter > 0) return msg.retryAfter;
+    const match = msg.text.match(/зачекайте\s+(\d+)\s*сек/i) || msg.text.match(/retry in\s+([0-9.]+)/i);
+    return match && match[1] ? Math.ceil(parseFloat(match[1])) : 0;
+  }, [msg.retryAfter, msg.text]);
+
+  const [countdown, setCountdown] = useState(initialRetrySeconds);
+
+  useEffect(() => {
+    if (initialRetrySeconds > 0) {
+      setCountdown(initialRetrySeconds);
+      const timer = setInterval(() => {
+        setCountdown(prev => {
+          if (prev <= 1) {
+            clearInterval(timer);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      return () => clearInterval(timer);
+    }
+  }, [initialRetrySeconds]);
 
   const handleCopy = async () => {
     try {
@@ -223,7 +252,7 @@ export const ChatMessageBubble: React.FC<{
 
   return (
     <div className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'} relative z-10`}>
-      <div className={`flex gap-2.5 w-full max-w-full md:max-w-4xl min-w-0 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+      <div className={`flex gap-2.5 w-full max-w-full md:max-w-5xl lg:max-w-6xl min-w-0 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
         
         {/* Compact Avatar */}
         <div className="flex-shrink-0 mt-1">
@@ -304,37 +333,134 @@ export const ChatMessageBubble: React.FC<{
             )}
             
             <div className="max-w-full overflow-hidden flex-1 min-w-0 leading-relaxed">
-              {msg.role === 'model' ? renderMessageContent(msg.text) : <span className="whitespace-pre-wrap break-words relative z-10" style={{ fontFamily }}>{msg.text}</span>}
-              {msg.isTyping && (
+              {msg.isTyping && (!msg.text || msg.text.trim() === '') ? (
+                <div className="py-2 px-3 bg-theme-base/70 rounded-xl border border-theme-border/60 my-1 flex flex-col gap-2">
+                  <div className="flex items-center gap-2 text-xs">
+                    {msg.aiStatus?.step === 'analyzing' && (
+                      <>
+                        <FolderGit2 size={15} className="text-amber-400 animate-pulse shrink-0" />
+                        <span className="font-medium text-amber-300">
+                          {msg.aiStatus.detail || 'Аналіз структури проекту та закріплених файлів...'}
+                        </span>
+                      </>
+                    )}
+                    {msg.aiStatus?.step === 'searching' && (
+                      <>
+                        <Search size={15} className="text-blue-400 animate-spin shrink-0" />
+                        <span className="font-medium text-blue-300">
+                          {msg.aiStatus.detail || 'Google Search: пошук подібних рішень та документації...'}
+                        </span>
+                      </>
+                    )}
+                    {msg.aiStatus?.step === 'thinking' && (
+                      <>
+                        <Brain size={15} className="text-purple-400 animate-pulse shrink-0" />
+                        <span className="font-medium text-purple-300">
+                          {msg.aiStatus.detail || 'Обдумування архітектури та підготовка коду...'}
+                        </span>
+                      </>
+                    )}
+                    {(!msg.aiStatus || msg.aiStatus.step === 'generating') && (
+                      <>
+                        <Sparkles size={15} className="text-theme-accent animate-spin shrink-0" />
+                        <span className="font-medium text-theme-accent">
+                          {msg.aiStatus?.detail || t[lang].aiThinking}
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Progress pipeline indicator */}
+                  <div className="flex items-center gap-1.5 text-[11px] text-theme-muted font-mono pt-1 border-t border-theme-border/40">
+                    <span className={`px-1.5 py-0.5 rounded ${msg.aiStatus?.step === 'analyzing' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'opacity-60'}`}>
+                      1. Аналіз проекту
+                    </span>
+                    <span className="opacity-40">→</span>
+                    <span className={`px-1.5 py-0.5 rounded ${msg.aiStatus?.step === 'searching' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' : 'opacity-60'}`}>
+                      2. Google Search
+                    </span>
+                    <span className="opacity-40">→</span>
+                    <span className={`px-1.5 py-0.5 rounded ${msg.aiStatus?.step === 'thinking' ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'opacity-60'}`}>
+                      3. Обдумування
+                    </span>
+                    <span className="opacity-40">→</span>
+                    <span className={`px-1.5 py-0.5 rounded ${msg.aiStatus?.step === 'generating' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'opacity-60'}`}>
+                      4. Генерація
+                    </span>
+                  </div>
+
+                  {msg.searchQueries && msg.searchQueries.length > 0 && (
+                    <div className="flex items-center gap-1.5 text-[11px] text-blue-300 bg-blue-950/40 px-2 py-1 rounded border border-blue-800/40">
+                      <Search size={12} className="text-blue-400 shrink-0" />
+                      <span className="truncate">Запит: <strong>"{msg.searchQueries[0]}"</strong></span>
+                    </div>
+                  )}
+                </div>
+              ) : msg.role === 'model' ? (
+                renderMessageContent(msg.text)
+              ) : (
+                <span className="whitespace-pre-wrap break-words relative z-10" style={{ fontFamily }}>{msg.text}</span>
+              )}
+              
+              {msg.isTyping && msg.text && msg.text.trim() !== '' && (
                 <span className="inline-flex items-center gap-1 text-xs text-theme-accent font-medium ml-1.5 animate-pulse">
                   <span className="w-1.5 h-3.5 bg-theme-accent rounded-sm inline-block"></span>
-                  <span className="text-[11px] opacity-80">{t[lang].aiThinking}</span>
+                  <span className="text-[11px] opacity-80">
+                    {msg.aiStatus?.step === 'searching' ? 'Пошук даних...' : t[lang].aiThinking}
+                  </span>
                 </span>
               )}
             </div>
 
-            {/* Google Search Grounding Citations */}
-            {msg.groundingSources && msg.groundingSources.length > 0 && (
-              <div className="mt-3 pt-2.5 border-t border-theme-border/40 flex flex-col gap-1.5 relative z-10">
-                <div className="flex items-center gap-1.5 text-xs text-theme-muted font-bold">
-                  <Globe size={13} className="text-blue-400" />
-                  <span>{t[lang].searchSources || 'Google Search Sources'}:</span>
+            {/* Google Search Queries and Citations */}
+            {((msg.searchQueries && msg.searchQueries.length > 0) || (msg.groundingSources && msg.groundingSources.length > 0)) && (
+              <div className="mt-3 pt-2.5 border-t border-theme-border/40 flex flex-col gap-2 relative z-10">
+                <div className="flex items-center justify-between text-xs text-theme-muted">
+                  <div className="flex items-center gap-1.5 font-bold text-blue-400">
+                    <Globe size={13} className="text-blue-400" />
+                    <span>Google Search Data:</span>
+                  </div>
+                  {msg.searchQueries && msg.searchQueries.length > 0 && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-950/50 text-blue-300 border border-blue-800/40">
+                      Знайдено в реальному часі
+                    </span>
+                  )}
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {msg.groundingSources.map((source, sIdx) => (
-                    <a
-                      key={sIdx}
-                      href={source.uri}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-theme-base hover:bg-theme-hover border border-theme-border text-[11px] text-blue-400 hover:text-blue-300 transition-colors truncate max-w-[280px]"
-                      title={source.title || source.uri}
-                    >
-                      <span className="truncate">{source.title || source.uri}</span>
-                      <ExternalLink size={10} className="shrink-0 opacity-70" />
-                    </a>
-                  ))}
-                </div>
+
+                {/* Show actual search queries if performed */}
+                {msg.searchQueries && msg.searchQueries.length > 0 && (
+                  <div className="flex flex-wrap gap-1 items-center text-[11px]">
+                    <span className="text-theme-muted text-[10px]">Пошукові запити:</span>
+                    {msg.searchQueries.map((q, qIdx) => (
+                      <span 
+                        key={qIdx}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-theme-base/80 border border-theme-border text-neutral-300 text-[11px]"
+                      >
+                        <Search size={10} className="text-blue-400" />
+                        <span>"{q}"</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Show citation links */}
+                {msg.groundingSources && msg.groundingSources.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {msg.groundingSources.map((source, sIdx) => (
+                      <a
+                        key={sIdx}
+                        href={source.uri}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-theme-base hover:bg-theme-hover border border-theme-border text-[11px] text-blue-400 hover:text-blue-300 transition-colors truncate max-w-[280px]"
+                        title={source.title || source.uri}
+                      >
+                        <span className="truncate">{source.title || source.uri}</span>
+                        <ExternalLink size={10} className="shrink-0 opacity-70" />
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -368,6 +494,49 @@ export const ChatMessageBubble: React.FC<{
                 >
                   <RefreshCw size={12} /> Повідомити ШІ та перегенерувати
                 </button>
+              </div>
+            )}
+
+            {msg.isError && (
+              <div className="mt-3 p-3 bg-red-950/40 border border-red-800/60 rounded-xl flex flex-col gap-2.5 text-xs text-red-200 relative z-10">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle size={16} className="text-amber-400 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <div className="font-bold text-amber-300">
+                      {countdown > 0 
+                        ? `Обмеження запитів безкоштовного тарифу (Free Tier Quota). Зачекайте ${countdown} сек.` 
+                        : 'Ліміт запитів або збій з\'єднання'}
+                    </div>
+                    <div className="text-[11px] text-red-300/90 mt-0.5 leading-relaxed">
+                      {countdown > 0
+                        ? `Безкоштовний тариф Google Gemini відновлює токени щохвилини. Таймер закінчиться через ${countdown} сек.`
+                        : 'Ви можете спробувати надіслати запит знову зараз, або перемкнутися на легшу модель у Налаштуваннях (наприклад, Gemini 3.1 Flash-Lite).'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1 border-t border-red-900/40">
+                  <button
+                    onClick={() => onRegenerate("Будь ласка, повтори виконання останнього запиту.")}
+                    disabled={countdown > 0}
+                    className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-all text-xs ${
+                      countdown > 0 
+                        ? 'bg-neutral-800 text-neutral-400 cursor-not-allowed border border-neutral-700' 
+                        : 'bg-amber-600 hover:bg-amber-500 text-white shadow-sm cursor-pointer'
+                    }`}
+                  >
+                    <RefreshCw size={12} className={countdown > 0 ? 'animate-spin opacity-50' : ''} />
+                    {countdown > 0 ? `Зачекайте ${countdown}с` : 'Спробувати знову'}
+                  </button>
+                  {onDeleteMessage && (
+                    <button
+                      onClick={() => onDeleteMessage(msg.id)}
+                      className="px-2.5 py-1.5 bg-neutral-800/80 hover:bg-neutral-700 text-neutral-300 rounded-lg text-xs transition-colors border border-neutral-700"
+                    >
+                      Закрити
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 

@@ -3,7 +3,12 @@ import { ChatMessage, ChatAttachment, ContextFile, ThemeSettings, GroundingSourc
 export interface StreamChunk {
   text?: string;
   groundingSources?: GroundingSource[];
+  searchQueries?: string[];
   modelUsed?: string;
+  error?: string;
+  retryAfter?: number;
+  status?: 'analyzing' | 'searching' | 'thinking' | 'generating' | 'search_completed';
+  detail?: string;
 }
 
 export const upscaleImage = async (base64Data: string, mimeType: string): Promise<string> => {
@@ -97,13 +102,20 @@ export const generateChatStreamResponse = async function* (
         try {
           const parsed = JSON.parse(dataStr);
           if (parsed.error) {
-            throw new Error(parsed.error);
+            yield {
+              error: parsed.error,
+              retryAfter: parsed.retryAfter
+            };
+            return;
           }
-          if (parsed.text || parsed.groundingSources || parsed.modelUsed) {
+          if (parsed.text !== undefined || parsed.groundingSources || parsed.modelUsed || parsed.status || parsed.searchQueries) {
             yield {
               text: parsed.text,
               groundingSources: parsed.groundingSources,
-              modelUsed: parsed.modelUsed
+              searchQueries: parsed.searchQueries,
+              modelUsed: parsed.modelUsed,
+              status: parsed.status,
+              detail: parsed.detail
             };
           }
         } catch (e: any) {
@@ -119,18 +131,28 @@ export const generateChatStreamResponse = async function* (
       if (dataStr !== '[DONE]') {
         try {
           const parsed = JSON.parse(dataStr);
-          if (parsed.text || parsed.groundingSources || parsed.modelUsed) {
+          if (parsed.error) {
+            yield {
+              error: parsed.error,
+              retryAfter: parsed.retryAfter
+            };
+            return;
+          }
+          if (parsed.text !== undefined || parsed.groundingSources || parsed.modelUsed || parsed.status || parsed.searchQueries) {
             yield {
               text: parsed.text,
               groundingSources: parsed.groundingSources,
-              modelUsed: parsed.modelUsed
+              searchQueries: parsed.searchQueries,
+              modelUsed: parsed.modelUsed,
+              status: parsed.status,
+              detail: parsed.detail
             };
           }
         } catch {}
       }
     }
   } catch (error: any) {
-    console.error('Gemini Stream Error:', error);
+    console.warn('Gemini stream client notice:', error?.message || error);
     let errMsg = error?.message || "Помилка з'єднання з ШІ.";
     try {
       if (typeof errMsg === 'string' && errMsg.startsWith('{')) {

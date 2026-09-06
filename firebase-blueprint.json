@@ -1,0 +1,93 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Authenticated user profile",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Firebase Auth UID",
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "description": "User email address",
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "description": "User display name",
+          "maxLength": 100
+        },
+        "isAdmin": {
+          "type": "boolean",
+          "description": "Whether user has administrator privileges"
+        },
+        "avatar": {
+          "type": "string",
+          "description": "Avatar emoji or identifier",
+          "maxLength": 30
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Profile picture URL",
+          "maxLength": 500
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last updated ISO timestamp",
+          "maxLength": 64
+        }
+      },
+      "required": ["id", "email", "name", "isAdmin"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "User saved project metadata and state",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique project identifier",
+          "maxLength": 128
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner",
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "description": "Project title",
+          "maxLength": 120
+        },
+        "filesCount": {
+          "type": "number",
+          "description": "Count of project files"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last updated ISO timestamp",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation ISO timestamp",
+          "maxLength": 64
+        }
+      },
+      "required": ["id", "ownerId", "name"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile document indexed by Auth UID"
+    },
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Project documents owned by users"
+    }
+  }
+}

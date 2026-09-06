@@ -327,8 +327,38 @@ export const Chat: React.FC<ChatProps> = ({
           break;
         }
 
+        if (chunk.error) {
+          finalModelText = chunk.error;
+          setHistory(prev => prev.map(m => m.id === modelMessageId ? { 
+            ...m, 
+            text: chunk.error!, 
+            isError: true, 
+            isTyping: false,
+            retryAfter: chunk.retryAfter 
+          } : m));
+          return;
+        }
+
         if (chunk.modelUsed) {
           setHistory(prev => prev.map(m => m.id === modelMessageId ? { ...m, modelUsed: chunk.modelUsed } : m));
+        }
+
+        if (chunk.status || chunk.detail) {
+          setHistory(prev => prev.map(m => m.id === modelMessageId ? {
+            ...m,
+            aiStatus: {
+              step: (chunk.status as any) || m.aiStatus?.step || 'thinking',
+              detail: chunk.detail || m.aiStatus?.detail,
+              searchQueries: chunk.searchQueries || m.aiStatus?.searchQueries
+            }
+          } : m));
+        }
+
+        if (chunk.searchQueries && chunk.searchQueries.length > 0) {
+          setHistory(prev => prev.map(m => m.id === modelMessageId ? {
+            ...m,
+            searchQueries: Array.from(new Set([...(m.searchQueries || []), ...chunk.searchQueries!]))
+          } : m));
         }
 
         if (chunk.groundingSources && chunk.groundingSources.length > 0) {
@@ -340,7 +370,11 @@ export const Chat: React.FC<ChatProps> = ({
 
         if (chunk.text) {
           finalModelText += chunk.text;
-          setHistory(prev => prev.map(m => m.id === modelMessageId ? { ...m, text: finalModelText } : m));
+          setHistory(prev => prev.map(m => m.id === modelMessageId ? { 
+            ...m, 
+            text: finalModelText,
+            aiStatus: m.aiStatus?.step === 'generating' ? m.aiStatus : { step: 'generating', detail: 'Генерація коду та відповіді...' }
+          } : m));
           
           const imgMatch = chunk.text.match(/!\[.*?\]\((data:image\/.*?;base64,.*?)\)/);
           if (imgMatch) {
@@ -436,11 +470,15 @@ export const Chat: React.FC<ChatProps> = ({
       }
 
     } catch (error: any) {
+      const msgStr = error?.message || String(error);
+      const match = msgStr.match(/retry in ([0-9]+(?:\.[0-9]+)?)s/i) || msgStr.match(/зачекайте ([0-9]+) сек/i);
+      const retrySecs = match && match[1] ? Math.ceil(parseFloat(match[1])) : undefined;
       setHistory(prev => prev.map(m => m.id === modelMessageId ? { 
         ...m, 
-        text: `Помилка: ${error.message}`, 
+        text: msgStr.startsWith('Помилка:') ? msgStr : `Помилка: ${msgStr}`, 
         isError: true,
-        isTyping: false 
+        isTyping: false,
+        retryAfter: retrySecs
       } : m));
       setIsVerifying(false);
     } finally {

@@ -10,6 +10,7 @@ import { GiftSpawner } from './components/App/GiftSpawner.tsx';
 import { ProjectState, FileNode, ChatMessage, User, ThemeSettings, FileChange } from './types.ts';
 import { generateId, saveProjectStateDB, loadProjectStateDB, exportProjectToZip } from './services/fileService.ts';
 import { applyChangesToFiles } from './services/projectService.ts';
+import { subscribeToAuthState, testFirestoreConnection, saveProjectMetadataToFirestore } from './services/firebase.ts';
 import { t } from './i18n.ts';
 
 const themesConfig = {
@@ -100,10 +101,24 @@ const App: React.FC = () => {
       }
     }).catch(e => console.error("Failed to load from DB", e));
     
+    // Test Firestore connection on boot
+    testFirestoreConnection().then(ok => {
+      if (ok) console.log("Firestore cloud database connected");
+    });
+
+    // Subscribe to real Firebase Authentication state
+    const unsubscribeAuth = subscribeToAuthState((authUsr) => {
+      if (authUsr) {
+        setUser(authUsr);
+      }
+    });
+
     const savedUser = localStorage.getItem('codelert_user');
     if (savedUser) {
       try { setUser(JSON.parse(savedUser)); } catch(e) {}
     }
+
+    return () => unsubscribeAuth();
   }, []);
 
   // Save to IndexedDB immediately and avoid LocalStorage quota errors
@@ -114,6 +129,11 @@ const App: React.FC = () => {
     saveProjectStateDB(state).catch(e => {
       console.warn("Failed to save to IndexedDB", e);
     });
+
+    // If user is authenticated, sync project metadata with Firestore
+    if (user?.id) {
+      saveProjectMetadataToFirestore(projectName, user.id, projectName, files.length);
+    }
 
     // Debounce lightweight settings/meta backup in localStorage
     const timeoutId = setTimeout(() => {
@@ -126,7 +146,7 @@ const App: React.FC = () => {
     }, 1500);
 
     return () => clearTimeout(timeoutId);
-  }, [projectName, files, chatHistory, settings]);
+  }, [projectName, files, chatHistory, settings, user?.id]);
 
   useEffect(() => {
     if (!settings.autoBackup) return;
@@ -357,7 +377,13 @@ const App: React.FC = () => {
         )}
         
         <div className={`flex-1 flex flex-col bg-theme-base/80 backdrop-blur-sm transition-all duration-300 items-center min-w-0`}>
-          <div className={`w-full h-full flex flex-col transition-all duration-300 min-w-0 ${!showLeftSidebar && !showRightSidebar ? 'max-w-5xl border-x border-theme-border shadow-2xl bg-theme-base' : ''}`}>
+          <div className={`w-full h-full flex flex-col transition-all duration-300 min-w-0 ${
+            settings.workspaceMode === 'compact' 
+              ? 'max-w-5xl mx-auto border-x border-theme-border/40' 
+              : settings.workspaceMode === 'wide'
+                ? 'w-full'
+                : (!showLeftSidebar && !showRightSidebar ? 'max-w-7xl mx-auto' : 'w-full')
+          }`}>
             <Chat 
               history={chatHistory}
               setHistory={setChatHistory}

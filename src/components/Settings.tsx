@@ -113,9 +113,9 @@ export const Settings: React.FC<SettingsProps> = ({
               className="w-full bg-theme-header border border-theme-border text-theme-text rounded p-2 outline-none focus:border-theme-accent text-xs"
             >
               <option value="auto">✨ {t[lang].modelAuto || 'Автоматичний вибір (Рекомендовано)'}</option>
-              <option value="gemini-3.5-flash">⚡ {t[lang].modelFlash || 'gemini-3.5-flash (Універсальна + Google Search)'}</option>
-              <option value="gemini-3.1-pro-preview">🧠 {t[lang].modelPro || 'gemini-3.1-pro-preview (Складні задачі та кодинг)'}</option>
-              <option value="gemini-3.1-flash-lite">🚀 {t[lang].modelLite || 'gemini-3.1-flash-lite (Швидка)'}</option>
+              <option value="gemini-3.5-flash">⚡ {t[lang].modelFlash || 'gemini-3.5-flash (Оптимальна + Google Search)'}</option>
+              <option value="gemini-3.1-flash-lite">🚀 {t[lang].modelLite || 'gemini-3.1-flash-lite (Швидка + економія токенів)'}</option>
+              <option value="gemini-3.1-pro-preview">🧠 {t[lang].modelPro || 'gemini-3.1-pro-preview (Потрібен Pro тариф)'}</option>
             </select>
           </div>
 
@@ -134,6 +134,25 @@ export const Settings: React.FC<SettingsProps> = ({
               <HelpCircle size={14} className="text-blue-400 hover:text-blue-300 transition-colors cursor-help" />
               <div className="absolute right-0 bottom-full mb-2 w-64 p-2.5 bg-theme-header text-theme-text text-xs rounded-md shadow-2xl opacity-0 group-hover/tooltip:opacity-100 pointer-events-none transition-opacity z-50 border border-theme-border leading-snug">
                 {t[lang].searchGroundingTooltip || 'ШІ використовує актуальні дані з інтернету через Google Search Grounding для надання найновішої інформації.'}
+              </div>
+            </div>
+          </div>
+
+          {/* AI Deep Thinking & Analysis Pause */}
+          <div className="flex items-center justify-between group">
+            <label className="flex items-center gap-2 font-medium text-theme-text cursor-pointer hover:text-theme-accent transition-colors">
+              <input 
+                type="checkbox" 
+                checked={settings.aiDeepThinking !== false}
+                onChange={(e) => setSettings({ ...settings, aiDeepThinking: e.target.checked })}
+                className="accent-theme-accent w-4 h-4 cursor-pointer"
+              />
+              <span className="text-purple-400 font-semibold">Глибокий аналіз та пауза ШІ</span>
+            </label>
+            <div className="relative group/tooltip">
+              <HelpCircle size={14} className="text-purple-400 hover:text-purple-300 transition-colors cursor-help" />
+              <div className="absolute right-0 bottom-full mb-2 w-64 p-2.5 bg-theme-header text-theme-text text-xs rounded-md shadow-2xl opacity-0 group-hover/tooltip:opacity-100 pointer-events-none transition-opacity z-50 border border-theme-border leading-snug">
+                Дає ШІ додатковий час для аналізу структури проекту, пошуку та побудови архітектурного рішення перед видачею відповіді.
               </div>
             </div>
           </div>
@@ -309,6 +328,30 @@ export const Settings: React.FC<SettingsProps> = ({
           >
             <option value="all">{t[lang].contextModeAll}</option>
             <option value="selected">{t[lang].contextModeSelected}</option>
+          </select>
+        </div>
+
+        {/* Workspace Mode / Dead-zone elimination */}
+        <div className="p-3 bg-theme-panel rounded-lg border border-theme-border">
+          <div className="flex items-center justify-between mb-2">
+            <label className="block text-xs font-bold text-theme-muted uppercase tracking-wider">
+              Робоча зона / Workspace
+            </label>
+            <div className="relative group/tooltip">
+              <HelpCircle size={14} className="text-theme-muted hover:text-theme-accent transition-colors cursor-help" />
+              <div className="absolute right-0 bottom-full mb-2 w-60 p-2.5 bg-theme-header text-theme-text text-xs rounded-md shadow-2xl opacity-0 group-hover/tooltip:opacity-100 pointer-events-none transition-opacity z-50 border border-theme-border leading-snug">
+                Оптимізує робочий простір, усуваючи мертві зони та розширюючи область перегляду коду й чату на весь екран.
+              </div>
+            </div>
+          </div>
+          <select 
+            value={settings.workspaceMode || 'wide'}
+            onChange={(e) => setSettings({ ...settings, workspaceMode: e.target.value as 'wide' | 'normal' | 'compact' })}
+            className="w-full bg-theme-header border border-theme-border text-theme-text rounded p-2 outline-none focus:border-theme-accent text-xs"
+          >
+            <option value="wide">Максимальний (100% ширина, без мертвих зон)</option>
+            <option value="normal">Стандартний (Адаптивний)</option>
+            <option value="compact">Компактний (Центрований)</option>
           </select>
         </div>
 

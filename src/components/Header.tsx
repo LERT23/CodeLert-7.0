@@ -12,6 +12,7 @@ import { ProjectState, User, ThemeSettings } from '../types.ts';
 import { exportProjectToZip } from '../services/fileService.ts';
 import { t } from '../i18n.ts';
 import { GoogleAuthModal } from './Header/GoogleAuthModal.tsx';
+import { logoutUser } from '../services/firebase.ts';
 
 interface HeaderProps {
   projectName: string;
@@ -57,18 +58,25 @@ export const Header: React.FC<HeaderProps> = ({
     }
   };
 
-  const handleLogin = (email: string) => {
-    const isAdmin = email.toLowerCase() === 'lipinsky2033@gmail.com';
-    const name = email.split('@')[0];
-    setUser({ email, name, isAdmin, avatar: '🙇‍♂️' });
+  const handleLogin = (newUser: User) => {
+    setUser(newUser);
     setShowAuthModal(false);
   };
 
-  const emojis = ['🙇‍♂️', '👨‍💻', '👩‍💻', '🤖', '👾', '👽', '🤓', '🚀', '😎', '🐱‍💻'];
+  const handleLogout = async () => {
+    try {
+      await logoutUser();
+    } catch (e) {
+      console.warn("Logout error:", e);
+    }
+    setUser(null);
+  };
+
+  const emojis = ['👑', '👨‍💻', '👩‍💻', '🤖', '👾', '👽', '🤓', '🚀', '😎', '🐱‍💻'];
   
   const handleAvatarClick = () => {
     if (user) {
-      const currentIndex = emojis.indexOf(user.avatar || '🙇‍♂️');
+      const currentIndex = emojis.indexOf(user.avatar || '👨‍💻');
       const nextIndex = (currentIndex + 1) % emojis.length;
       setUser({ ...user, avatar: emojis[nextIndex] });
     }
@@ -76,7 +84,12 @@ export const Header: React.FC<HeaderProps> = ({
 
   return (
     <>
-      {showAuthModal && <GoogleAuthModal onClose={() => setShowAuthModal(false)} onLogin={handleLogin} />}
+      {showAuthModal && (
+        <GoogleAuthModal 
+          onClose={() => setShowAuthModal(false)} 
+          onLoginSuccess={handleLogin} 
+        />
+      )}
       <header className="h-14 bg-theme-header border-b border-theme-border flex items-center justify-between px-4 shrink-0 relative z-50">
         {settings.newYearMode && (
           <div className="absolute top-0 left-0 w-full h-4 pointer-events-none flex justify-around overflow-hidden opacity-90 z-50">
@@ -143,10 +156,17 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
 
           {user ? (
-            <div className="flex items-center gap-2 bg-theme-base px-3 py-1.5 rounded border border-theme-border">
+            <div className="flex items-center gap-2 bg-theme-base px-3 py-1.5 rounded-lg border border-theme-border shadow-xs">
               <div className="relative cursor-pointer select-none" onClick={handleAvatarClick} title="Змінити аватар">
-                {user.avatar ? (
-                  <span className="text-xl leading-none block">{user.avatar}</span>
+                {user.photoURL ? (
+                  <img 
+                    src={user.photoURL} 
+                    alt={user.name} 
+                    className="w-6 h-6 rounded-full object-cover border border-theme-border" 
+                    referrerPolicy="no-referrer"
+                  />
+                ) : user.avatar ? (
+                  <span className="text-lg leading-none block">{user.avatar}</span>
                 ) : (
                   <UserCircle size={22} className="text-theme-muted" />
                 )}
@@ -154,11 +174,11 @@ export const Header: React.FC<HeaderProps> = ({
                   <Crown size={12} className="absolute -top-2 -right-2 text-amber-400 fill-amber-400" />
                 )}
               </div>
-              <span className={`text-sm ${user.isAdmin ? 'text-amber-400 font-bold' : 'text-theme-text'}`}>
+              <span className={`text-xs md:text-sm font-medium ${user.isAdmin ? 'text-amber-400 font-bold' : 'text-theme-text'}`}>
                 {user.name}
               </span>
-              <button onClick={() => setUser(null)} className="ml-2 text-theme-muted hover:text-red-400" title={t[lang].logout}>
-                <LogOut size={16} />
+              <button onClick={handleLogout} className="ml-1.5 text-theme-muted hover:text-red-400 transition-colors p-1" title={t[lang].logout}>
+                <LogOut size={15} />
               </button>
             </div>
           ) : (
