@@ -57,9 +57,9 @@ export interface ThemeSettings {
   theme: ThemeColor;
   language: 'UA' | 'EN';
   fontFamily: string;
-  aiModel?: 'gemini-3.5-flash' | 'gemini-3.1-pro-preview' | 'gemini-3.1-flash-lite' | 'auto';
+  aiModel?: 'auto' | 'gemini-3.8-flash' | 'gemini-flash-latest' | 'gemini-3.6-flash' | 'gemini-3.1-flash-lite' | 'gemini-3.1-pro-preview' | 'gemini-3.5-flash';
   enableSearchGrounding?: boolean;
-  contextMode?: 'selected' | 'all';
+  contextMode?: 'adaptive' | 'full' | 'selected' | 'all';
   newYearMode?: boolean;
   autoBackup?: boolean;
   autoBackupInterval?: number;
@@ -68,7 +68,7 @@ export interface ThemeSettings {
   useCustomCursor?: boolean;
   enableAnimations?: boolean;
   enableAiVerification?: boolean;
-  workspaceMode?: 'normal' | 'wide' | 'compact';
+  workspaceMode?: 'wide' | 'normal' | 'compact';
   aiDeepThinking?: boolean;
 }
 

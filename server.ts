@@ -51,15 +51,15 @@ function formatErrorMessage(error: any): string {
 
   if (typeof raw === 'string') {
     if (raw.includes('503') || raw.includes('high demand') || raw.includes('UNAVAILABLE')) {
-      return "Сервер ШІ тимчасово перевантажений. Будь ласка, зачекайте кілька секунд і надішліть запит знову.";
+      return "Сервери Google Gemini тимчасово перевантажені (High Demand). Зачекайте кілька секунд і надішліть запит знову.";
     }
     if (raw.includes('429') || raw.includes('RESOURCE_EXHAUSTED') || raw.includes('quota') || raw.includes('Too Many Requests')) {
       const match = raw.match(/retry in ([0-9]+(?:\.[0-9]+)?)s/i) || raw.match(/retryDelay["']?\s*:\s*["']?(\d+)/i);
       if (match && match[1]) {
         const secs = Math.ceil(parseFloat(match[1]));
-        return `Перевищено ліміт запитів безкоштовного тарифу (Free Tier Quota). Будь ласка, зачекайте ${secs} сек. або оберіть іншу модель у Налаштуваннях.`;
+        return `Перевищено тимчасовий ліміт запитів безкоштовного тарифу (Free Tier Quota). Будь ласка, зачекайте ${secs} сек. (таймер активний нижче) або перемкніть модель на Gemini 3.1 Flash-Lite у Налаштуваннях.`;
       }
-      return "Перевищено ліміт запитів або токенів безкоштовного тарифу. Будь ласка, зачекайте кілька секунд і спробуйте знову.";
+      return "Перевищено тимчасовий ліміт запитів безкоштовного тарифу (Free Tier Quota). Будь ласка, зачекайте кілька секунд і натисніть 'Спробувати знову' або оберіть Gemini 3.1 Flash-Lite у Налаштуваннях.";
     }
   }
   return String(raw || "Помилка з'єднання з ШІ.");
@@ -69,90 +69,132 @@ async function generateStreamWithFallback(
   ai: GoogleGenAI, 
   primaryModel: string, 
   configPayload: any, 
-  enableSearch: boolean = true
+  enableSearch: boolean = true,
+  onStatusUpdate?: (status: { step: string; detail: string }) => void
 ) {
-  // Define fallback models based on primary request
+  // Define candidate models in prioritized order based on user selection
   let candidateModels: string[];
   if (primaryModel === 'gemini-3.1-pro-preview') {
-    // If explicitly requested Pro, try Pro, then fallback to high-capacity Flash models
-    candidateModels = ['gemini-3.1-pro-preview', 'gemini-3.5-flash', 'gemini-3.8-flash', 'gemini-3.1-flash-lite'];
+    candidateModels = ['gemini-3.1-pro-preview', 'gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'];
   } else if (primaryModel === 'gemini-3.1-flash-lite') {
-    candidateModels = ['gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-3.8-flash'];
+    candidateModels = ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.8-flash'];
+  } else if (primaryModel === 'gemini-flash-latest') {
+    candidateModels = ['gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'];
+  } else if (primaryModel === 'gemini-3.6-flash') {
+    candidateModels = ['gemini-3.6-flash', 'gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3.1-flash-lite'];
   } else {
-    // Standard / Auto / Flash default (gemini-3.5-flash has Search Grounding + generous quota)
-    candidateModels = ['gemini-3.5-flash', 'gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+    // Default 'auto' or 'gemini-3.8-flash'
+    candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'];
   }
 
   // Remove duplicates while preserving order
   candidateModels = candidateModels.filter((m, idx, arr) => arr.indexOf(m) === idx);
 
+  let searchAllowed = enableSearch;
   let lastError: any = null;
 
-  for (const model of candidateModels) {
-    const configForModel: any = { ...configPayload.config };
-
-    // Build tools for the model
-    const tools: any[] = [];
-    if (enableSearch && (model === 'gemini-3.5-flash' || model === 'gemini-3.8-flash' || model === 'gemini-flash-latest' || model === 'gemini-3.1-pro-preview')) {
-      tools.push({ googleSearch: {} });
+  const imageDeclaration = {
+    name: 'generate_image',
+    description: 'Generates an image based on a detailed text prompt. Use this when the user asks to draw, create, or generate an image or picture.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        prompt: { type: Type.STRING, description: 'Detailed prompt for the image generation in English.' }
+      },
+      required: ['prompt']
     }
-    tools.push({
-      functionDeclarations: [{
-        name: 'generate_image',
-        description: 'Generates an image based on a detailed text prompt. Use this when the user asks to draw, create, or generate an image or picture.',
-        parameters: {
-          type: Type.OBJECT,
-          properties: {
-            prompt: { type: Type.STRING, description: 'Detailed prompt for the image generation in English.' }
-          },
-          required: ['prompt']
-        }
-      }]
-    });
-    configForModel.tools = tools;
+  };
 
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const stream = await ai.models.generateContentStream({
-          ...configPayload,
-          model,
-          config: configForModel
-        });
-        return { stream, modelUsed: model };
-      } catch (err: any) {
-        lastError = err;
-        const msg = String(err?.message || err || '');
-        console.warn(`Model ${model} attempt ${attempt} notice:`, msg.substring(0, 180));
+  for (let mIdx = 0; mIdx < candidateModels.length; mIdx++) {
+    const model = candidateModels[mIdx];
 
-        // If Pro model on free tier (limit: 0), immediately advance to flash models without waiting
-        if (msg.includes('limit: 0') || (msg.includes('gemini-3.1-pro') && msg.includes('RESOURCE_EXHAUSTED'))) {
+    // For each model, first try with search (if enabled & not quota-exhausted), then without search
+    const searchOptions = searchAllowed ? [true, false] : [false];
+
+    for (const withSearch of searchOptions) {
+      const configForModel: any = { ...configPayload.config };
+      const tools: any[] = [];
+      if (withSearch) {
+        tools.push({ googleSearch: {} });
+        tools.push({ functionDeclarations: [imageDeclaration] });
+        configForModel.tools = tools;
+        configForModel.toolConfig = { includeServerSideToolInvocations: true };
+      } else {
+        tools.push({ functionDeclarations: [imageDeclaration] });
+        configForModel.tools = tools;
+        delete configForModel.toolConfig;
+      }
+
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const stream = await ai.models.generateContentStream({
+            ...configPayload,
+            model,
+            config: configForModel
+          });
+          return { stream, modelUsed: model };
+        } catch (err: any) {
+          lastError = err;
+          const msg = String(err?.message || err || '');
+          console.warn(`Model ${model} (search: ${withSearch}, attempt: ${attempt}) notice:`, msg.substring(0, 180));
+
+          // If Google Search was enabled and failed with 429 quota, immediately disable search and try without search
+          if (withSearch && (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota'))) {
+            searchAllowed = false;
+            onStatusUpdate?.({ 
+              step: 'searching', 
+              detail: 'Квоту Google Search вичерпано. Перемикання на генерацію без веб-пошуку...' 
+            });
+            break; // Break attempt loop to move to withSearch = false
+          }
+
+          // If Pro model on free tier (limit: 0 or quota), immediately jump to flash model
+          if (model === 'gemini-3.1-pro-preview' && (msg.includes('limit: 0') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429'))) {
+            onStatusUpdate?.({ 
+              step: 'thinking', 
+              detail: 'gemini-3.1-pro-preview потребує платного тарифу. Перехід на Gemini Flash...' 
+            });
+            break;
+          }
+
+          // Check retry delay
+          const match = msg.match(/retry in ([0-9]+(?:\.[0-9]+)?)s/i) || msg.match(/retryDelay["']?\s*:\s*["']?(\d+)/i);
+          const retrySecs = match && match[1] ? parseFloat(match[1]) : 0;
+
+          // If brief delay <= 2s and first attempt, back off and retry
+          if (retrySecs > 0 && retrySecs <= 2 && attempt < 2) {
+            await sleep(Math.ceil(retrySecs * 1000) + 200);
+            continue;
+          }
+
+          // If 429 quota exhaustion on this model, inform user and advance to next candidate model
+          if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429') || msg.includes('PerDay')) {
+            if (mIdx < candidateModels.length - 1) {
+              const nextModel = candidateModels[mIdx + 1];
+              onStatusUpdate?.({ 
+                step: 'thinking', 
+                detail: `Модель ${model} тимчасово досягла ліміту. Перемикання на ${nextModel}...` 
+              });
+            }
+            break;
+          }
+
+          const isTransient = msg.includes('503') || msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('Too Many Requests');
+          if (isTransient && attempt < 2) {
+            await sleep(600 * attempt + Math.floor(Math.random() * 200));
+            continue;
+          }
           break;
         }
+      }
 
-        // Check for retry delay
-        const match = msg.match(/retry in ([0-9]+(?:\.[0-9]+)?)s/i) || msg.match(/retryDelay["']?\s*:\s*["']?(\d+)/i);
-        const retrySecs = match && match[1] ? parseFloat(match[1]) : 0;
-
-        // If short retry delay <= 2.5 seconds and first attempt, sleep and retry once
-        if (retrySecs > 0 && retrySecs <= 2.5 && attempt < 2) {
-          await sleep(Math.ceil(retrySecs * 1000) + 300);
-          continue;
-        }
-
-        // If hard per-day or 429 quota exhaustion, don't repeat same model
-        if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429') || msg.includes('PerDay')) {
-          break;
-        }
-
-        const isTransient = msg.includes('503') || msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('Too Many Requests');
-        if (isTransient && attempt < 2) {
-          await sleep(800 * attempt + Math.floor(Math.random() * 300));
-          continue;
-        }
+      // If we broke out due to Pro model quota, stop trying other search options for this model
+      if (model === 'gemini-3.1-pro-preview' && lastError && String(lastError.message).includes('429')) {
         break;
       }
     }
   }
+
   throw lastError;
 }
 
@@ -185,6 +227,16 @@ app.post('/api/gemini/stream', async (req, res) => {
     let systemInstruction = `Your name is Code-Lert (CodeLert AI 3.0). You are an expert programming assistant capable of analyzing up to 2 million lines of code.
 Спілкуйся тією ж мовою, якою до тебе звертається користувач (автоматично визначай мову з його повідомлень).
 
+БІБЛІЯ ЛОГІКИ ВІДПОВІДЕЙ ШІ (ОСНОВА "ГЛИБОКОГО АНАЛІЗУ"):
+Кожну відповідь ти зобов'язаний вибудовувати за цими 7 непорушними пунктами:
+"1" Аналіз запитання: виділення суті завдання, вимог та цілей користувача;
+"2" Аналіз наявних механік відповіді: підбір найкращих інструментів, алгоритмів та архітектурних рішень;
+"3" Пошук в Інтернеті через Google Search якщо питання складне і потребує більшої кількості наявних варіантів вирішення або за проханням користувача при увімкненій функції;
+"4" Аналіз структури (адаптивної чи повної), обдумування структурованості, чіткості, лаконічності й потреби наданого результату для користувача чи їх варіантів задля задоволення потреби та вирішення питання;
+"5" Додатковий пошук подібних файлів коду для вирішення все тієї ж проблеми, перевірка імпортів та типів;
+"6" Генерація самої відповіді (а також елементів коду якщо такі є);
+"7" Функція перевірки наданих результатів (якщо увімкнена).
+
 ПРАВИЛА ПОВЕДІНКИ:
 1. Надавай чіткі та зрозумілі відповіді. Пояснюй свій код, але уникай надмірної "води". Твої відповіді мають бути інформативними, але структурованими.
 2. НІКОЛИ НЕ ЗМІНЮЙ КОД БЕЗ ДОЗВОЛУ. Ти лише пропонуєш код, користувач сам вирішує, чи застосовувати його.
@@ -215,29 +267,40 @@ app.post('/api/gemini/stream', async (req, res) => {
 >>>>
 \`\`\`
 
+ПРАВИЛА КОНКРЕТНОЇ ЗАМІНИ РЯДКІВ ТА ПЕРЕЗАПИСУ (1/2 ТЕКСТУ І ЛІМІТИ):
+1. Правило 1/2 тексту (50% відносно обсягу коду в файлі):
+   - Якщо в коді замінюється менше або до 50% рядків (наприклад, якщо код на 500 рядків, а переписати потрібно 200 рядків) — ОБОВ'ЯЗКОВО виконуй точкову заміну потрібної частини через блок [REPLACE: шлях].
+   - Якщо ж у файлі замінюється більше 50% тексту — переписуй весь код файлу повністю через блок [FILE: шлях].
+2. Ліміт блоків REPLACE на один файл:
+   - В одному повідомленні для одного файлу дозволено не більше 3 блоків [REPLACE: шлях].
+   - Якщо таких поодиноких змін у різних частинах одного файлу більше 3 — переписуй код файлу повністю через блок [FILE: шлях].
+3. Одночасні зміни у кількох файлах (3 і більше файлів):
+   - Якщо ти одночасно вносиш зміни у 3 або більше файлів в одному повідомленні, ти ЗОБОВ'ЯЗАНИЙ спочатку (на початку відповіді, перед кодом) попередити користувача:
+     "⚠️ **Увага:** заплановано зміни у [X] файлах: [список файлів]. Ви можете застосувати всі зміни одразу кнопкою нижче, або повідомте, якщо вам зручніше коригувати по 1-2 файлах покроково."
+
 Щоб зберегти прикріплений користувачем файл (наприклад, зображення) у структуру проекту, використовуй команду:
 [SAVE_ATTACHMENT: назва_прикріпленого_файлу.ext -> шлях/куди/зберегти/назва.ext]
-ТИ МОЖЕШ ЗБЕРІГАТИ ЗОБРАЖЕННЯ ТА ІНШІ ФАЙЛИ, використовуючи цю команду! Не кажи, що не можеш.
 
-КРИТИЧНО ВАЖЛИВО: НІКОЛИ не використовуйте коментарі типу "// решта коду залишається без змін" або "// ...". ВИ ПОВИННІ ПИСАТИ ПОВНИЙ, АБСОЛЮТНО ВЕСЬ КОД ФАЙЛУ ВІД ПОЧАТКУ ДО КІНЦЯ у блоці коду (або використовувати REPLACE блок).
+КРИТИЧНО ВАЖЛИВО: НІКОЛИ не використовуйте коментарі типу "// решта коду залишається без змін" або "// ...". ВИ ПОВИННІ ПИСАТИ ПОВНИЙ КОД ФАЙЛУ ВІД ПОЧАТКУ ДО КІНЦЯ у блоці [FILE: ...] (або використовувати [REPLACE: ...] згідно з правилами).
 КРИТИЧНО ВАЖЛИВО: При оновленні коду переконайся, що ти не видаляєш існуючі функціональні елементи, імпорти чи стилі, якщо про це прямо не просив користувач. Завжди зберігай цілісність програми.
-НІКОЛИ не використовуйте JSON блоки, \`file-op\` або інші формати для коду. Пишіть ПОВНИЙ код у звичайних markdown блоках \`\`\` після тегу [FILE: ...] або [REPLACE: ...].
-НІКОЛИ не згадуйте про 'file-op', JSON-блоки або інші внутрішні механізми. Якщо ви надаєте код для збереження, просто скажіть користувачу: "Натисніть кнопку 'Застосувати всі зміни в коді' під цим повідомленням, щоб зберегти файли."
+НІКОЛИ не використовуйте JSON блоки, \`file-op\` або інші сторонні формати для коду.
+Якщо ви надаєте код для збереження, нагадайте користувачу: "Натисніть кнопку 'Застосувати всі зміни в коді' під цим повідомленням, щоб зберегти файли."
 
-ІНШІ КОМАНДИ (використовуй тільки якщо користувач прямо попросив):
+ІНШІ КОМАНДИ:
 [RENAME: старий_шлях.ext -> новий_шлях.ext]
 [DELETE: шлях/до/файлу.ext]
 [CREATE_FOLDER: шлях/до/папки]
 
 ОБОВ'ЯЗКОВО використовуйте емодзі у тексті!
 ОБОВ'ЯЗКОВО використовуйте форматування: **жирний**, *курсив*, <u>підкреслений</u> (через HTML тег <u>).
-НІКОЛИ не згадуйте про папку .temp або session.json. Ігноруйте їх існування.
+НІКОЛИ не згадуйте про папку .temp або session.json.
 
-УВАГА ЩОДО КОНТЕКСТУ:
-Ви завжди бачите структуру проекту. Але ви бачите ВМІСТ файлів ТІЛЬКИ якщо користувач увімкнув контекст і виділив їх.
+УВАГА ЩОДО АДАПТИВНОГО АНАЛІЗУ ТА КОНТЕКСТУ ФАЙЛІВ:
+Ти маєш повний доступ до структури проекту та наданого вмісту файлів у блоці "Контекст проекту".
+Спершу аналізуй назви та шляхи файлів у структурі проекту. Обирай саме ті файли, які потрібні для виконання запиту, уважно аналізуй їхній повний код, методи, змінні та імпорти, і на основі цього генеруй точні зміни. Якщо передано вміст файлів — ти бачиш його повністю, тому спирайся на конкретні рядки з них.
 
 УВАГА ЩОДО ЗОБРАЖЕНЬ:
-Якщо користувач просить згенерувати зображення, ОБОВ'ЯЗКОВО використовуйте інструмент \`generate_image\`.`;
+Якщо користувач просить намалювати чи згенерувати картинку, ОБОВ'ЯЗКОВО використовуйте інструмент \`generate_image\`.`;
 
     if (settings?.aiModeStepByStep) {
       systemInstruction += `\n\nРЕЖИМ РОБОТИ: "По-кроково". Виконуй лише ОДНУ дію (зміну одного файлу або одну логічну операцію) за одне повідомлення. Не пиши багато коду одразу.`;
@@ -263,8 +326,8 @@ app.post('/api/gemini/stream', async (req, res) => {
     if (contextFiles.length > 0) {
       systemInstruction += '\n\nОсь поточний контекст проекту (вміст файлів):\n';
       let totalContextChars = 0;
-      const MAX_TOTAL_CONTEXT = 32000;
-      const MAX_FILE_CHARS = 9000;
+      const MAX_TOTAL_CONTEXT = 220000;
+      const MAX_FILE_CHARS = 35000;
 
       for (const f of contextFiles) {
         if (totalContextChars >= MAX_TOTAL_CONTEXT) {
@@ -290,7 +353,7 @@ app.post('/api/gemini/stream', async (req, res) => {
           let fileText = String(f.content || '');
           if (fileText.length > MAX_FILE_CHARS) {
             // Keep head and tail of file for context
-            fileText = fileText.slice(0, 4200) + '\n\n... [частину коду пропущено для економії токенів ШІ] ...\n\n' + fileText.slice(-4200);
+            fileText = fileText.slice(0, 16000) + '\n\n... [частину коду пропущено для економії токенів ШІ] ...\n\n' + fileText.slice(-16000);
           }
           const remainingBudget = MAX_TOTAL_CONTEXT - totalContextChars;
           if (fileText.length > remainingBudget) {
@@ -381,44 +444,67 @@ app.post('/api/gemini/stream', async (req, res) => {
     res.flushHeaders();
 
     // Determine target primary model:
-    // Default to gemini-3.5-flash which has Search Grounding + generous quota.
-    let chosenModel = 'gemini-3.5-flash';
+    let chosenModel = 'gemini-3.8-flash';
     if (settings?.aiModel === 'gemini-3.1-pro-preview') {
       chosenModel = 'gemini-3.1-pro-preview';
     } else if (settings?.aiModel === 'gemini-3.1-flash-lite') {
       chosenModel = 'gemini-3.1-flash-lite';
-    } else if (settings?.aiModel === 'gemini-3.5-flash') {
-      chosenModel = 'gemini-3.5-flash';
+    } else if (settings?.aiModel === 'gemini-flash-latest') {
+      chosenModel = 'gemini-flash-latest';
+    } else if (settings?.aiModel === 'gemini-3.6-flash') {
+      chosenModel = 'gemini-3.6-flash';
     } else {
-      // Auto selection uses gemini-3.5-flash by default (safe for free-tier quotas and supports search grounding)
-      chosenModel = 'gemini-3.5-flash';
+      // Auto selection uses gemini-3.8-flash by default (with auto-fallback to flash-latest & lite)
+      chosenModel = 'gemini-3.8-flash';
     }
 
     const enableSearch = settings?.enableSearchGrounding !== false;
 
-    // Send initial analytical status so user visually sees the AI deliberating and analyzing
+    // Send initial analytical status following the 7-step Logic Bible (Deep Analysis)
     res.write(`data: ${JSON.stringify({ 
       status: 'analyzing', 
-      detail: contextFiles.length > 0 
-        ? `Аналіз структури проекту та ${contextFiles.length} закріплених файлів...` 
-        : 'Аналіз структури проекту та вихідного коду...' 
+      detail: '[1/7] Аналіз запитання та наявних механік відповіді...' 
     })}\n\n`);
 
-    // Natural deliberation pause for project analysis & search preparation
-    await sleep(400);
+    await sleep(250);
+
+    res.write(`data: ${JSON.stringify({ 
+      status: 'analyzing', 
+      detail: '[2/7] Вибір архітектурного рішення та інструментів...' 
+    })}\n\n`);
+
+    await sleep(250);
 
     if (enableSearch) {
       res.write(`data: ${JSON.stringify({ 
         status: 'searching', 
-        detail: 'Google Search: перевірка документації та актуальних рішень в мережі...' 
+        detail: '[3/7] Пошук в Інтернеті через Google Search...' 
       })}\n\n`);
-      await sleep(400);
+      await sleep(300);
     }
 
     res.write(`data: ${JSON.stringify({ 
       status: 'thinking', 
-      detail: 'Обдумування архітектури та генерація безпечного коду...' 
+      detail: contextFiles.length > 0 
+        ? `[4/7 - 5/7] Аналіз структури та ${contextFiles.length} файлів коду проекту...`
+        : '[4/7 - 5/7] Аналіз структури проекту та пошук подібних файлів...' 
     })}\n\n`);
+
+    await sleep(250);
+
+    res.write(`data: ${JSON.stringify({ 
+      status: 'thinking', 
+      detail: '[6/7] Генерація структурованої відповіді та коду...' 
+    })}\n\n`);
+
+    const onStatusUpdate = (status: { step: string; detail: string }) => {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({
+          status: status.step,
+          detail: status.detail
+        })}\n\n`);
+      }
+    };
 
     const { stream: responseStream, modelUsed } = await generateStreamWithFallback(
       ai,
@@ -430,7 +516,8 @@ app.post('/api/gemini/stream', async (req, res) => {
           maxOutputTokens: 8192,
         }
       },
-      enableSearch
+      enableSearch,
+      onStatusUpdate
     );
 
     res.write(`data: ${JSON.stringify({ modelUsed })}\n\n`);

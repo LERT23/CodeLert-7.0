@@ -17,7 +17,9 @@ import {
   Image as ImageIcon,
   Play,
   FileText,
-  XCircle
+  XCircle,
+  Search,
+  X
 } from 'lucide-react';
 import { FileNode } from '../types.ts';
 import { generateId, parseFolderUpload, parseDroppedItems } from '../services/fileService.ts';
@@ -35,7 +37,7 @@ interface FileExplorerProps {
   selectedFileIds: Set<string>;
   setSelectedFileIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   onRefresh: () => Promise<void>;
-  contextMode: 'selected' | 'all';
+  contextMode?: 'adaptive' | 'full' | 'selected' | 'all';
 }
 
 const getFileDisplay = (name: string) => {
@@ -76,6 +78,21 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
   const [selectionBox, setSelectionBox] = useState({ startX: 0, startY: 0, currentX: 0, currentY: 0, isSelecting: false });
   const [isDragOverExternal, setIsDragOverExternal] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+
+  const getAllFilesFlat = (nodes: FileNode[], currentPath = ''): { node: FileNode; fullPath: string }[] => {
+    let list: { node: FileNode; fullPath: string }[] = [];
+    nodes.forEach(n => {
+      if (n.name === '.temp') return;
+      const fullPath = currentPath ? `${currentPath}/${n.name}` : n.name;
+      list.push({ node: n, fullPath });
+      if (n.isFolder && n.children) {
+        list = list.concat(getAllFilesFlat(n.children, fullPath));
+      }
+    });
+    return list;
+  };
 
   const [dialog, setDialog] = useState<{
     type: 'newFile' | 'newFolder' | 'rename' | 'delete';
@@ -627,6 +644,113 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
           </div>
         </div>
       )}
+
+      {/* Search Bar at the bottom of the left sidebar */}
+      <div className="border-t border-theme-border bg-theme-panel/95 shrink-0 p-2.5">
+        <div className="flex items-center justify-between mb-1.5 px-0.5">
+          <div className="flex items-center gap-1.5 text-xs font-bold text-theme-text uppercase tracking-wider">
+            <Search size={13} className="text-theme-accent" />
+            <span>{lang === 'UA' ? 'Пошук' : 'Search'}</span>
+          </div>
+          {searchQuery && (
+            <button 
+              onClick={() => setSearchQuery('')} 
+              className="text-[11px] text-theme-muted hover:text-theme-text transition-colors flex items-center gap-1"
+            >
+              <X size={12} />
+              <span>{lang === 'UA' ? 'Очистити' : 'Clear'}</span>
+            </button>
+          )}
+        </div>
+
+        <div className="relative">
+          <input 
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onFocus={() => setIsSearchFocused(true)}
+            placeholder={lang === 'UA' ? '🔍 Пошук файлу за назвою...' : '🔍 Search file by name...'}
+            className="w-full bg-theme-base border border-theme-border rounded-lg pl-3 pr-8 py-1.5 text-xs text-theme-text placeholder:text-theme-muted/70 outline-none focus:border-theme-accent focus:ring-1 focus:ring-theme-accent/30 transition-all"
+            style={{ fontFamily }}
+          />
+          {searchQuery ? (
+            <button 
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-theme-muted hover:text-theme-text"
+            >
+              <X size={13} />
+            </button>
+          ) : (
+            <Search size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-theme-muted/50 pointer-events-none" />
+          )}
+        </div>
+
+        {/* Search Results */}
+        {searchQuery.trim() && (
+          <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-theme-border bg-theme-base p-1 text-xs space-y-0.5 shadow-xl">
+            {(() => {
+              const q = searchQuery.trim().toLowerCase();
+              const matches = getAllFilesFlat(files).filter(f => 
+                f.node.name.toLowerCase().includes(q) ||
+                f.fullPath.toLowerCase().includes(q)
+              );
+
+              if (matches.length === 0) {
+                return (
+                  <div className="p-2 text-center text-theme-muted text-[11px]">
+                    {lang === 'UA' ? 'Файлів не знайдено' : 'No files found'}
+                  </div>
+                );
+              }
+
+              return matches.map(({ node, fullPath }) => {
+                const { Icon, colorClass } = getFileDisplay(node.name);
+                return (
+                  <div 
+                    key={node.id}
+                    onClick={() => {
+                      if (!node.isFolder) {
+                        onPreviewFile(node.id);
+                      } else {
+                        toggleFolder(node.id);
+                      }
+                    }}
+                    className="flex items-center justify-between p-1.5 rounded hover:bg-theme-hover cursor-pointer group transition-colors"
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      {node.isFolder ? (
+                        <Folder size={14} className="text-yellow-500 shrink-0" />
+                      ) : (
+                        <Icon size={14} className={`${colorClass} shrink-0`} />
+                      )}
+                      <div className="min-w-0 truncate">
+                        <div className="truncate font-medium text-theme-text text-[11px] group-hover:text-theme-accent">
+                          {node.name}
+                        </div>
+                        <div className="truncate text-[10px] text-theme-muted">
+                          {fullPath}
+                        </div>
+                      </div>
+                    </div>
+                    {!node.isFolder && (
+                      <button 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onPreviewFile(node.id);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 text-theme-muted hover:text-theme-text p-1 transition-opacity shrink-0"
+                        title={lang === 'UA' ? 'Переглянути файл' : 'Preview file'}
+                      >
+                        <Eye size={12} />
+                      </button>
+                    )}
+                  </div>
+                );
+              });
+            })()}
+          </div>
+        )}
+      </div>
 
       {/* Custom Dialog Modal */}
       {dialog && (

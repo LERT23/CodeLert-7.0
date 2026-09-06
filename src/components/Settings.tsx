@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { Upload, Download, Save, HelpCircle, FileArchive, Layers, CheckCircle2 } from 'lucide-react';
+import { Upload, Download, Save, HelpCircle, FileArchive, Layers, CheckCircle2, Sparkles } from 'lucide-react';
 import { ThemeSettings, ProjectState, ThemeColor } from '../types.ts';
 import { exportProjectState, parseImportedZip } from '../services/fileService.ts';
 import { t } from '../i18n.ts';
@@ -12,6 +12,7 @@ interface SettingsProps {
   onImportState: (state: ProjectState) => void;
   onImportZip: (files: any[]) => void;
   lang: 'UA' | 'EN';
+  onOpenOnboarding?: () => void;
 }
 
 const themesList: { id: ThemeColor; name: string; color: string; text?: string }[] = [
@@ -38,7 +39,8 @@ export const Settings: React.FC<SettingsProps> = ({
   projectState,
   onImportState,
   onImportZip,
-  lang
+  lang,
+  onOpenOnboarding
 }) => {
   const stateInputRef = useRef<HTMLInputElement>(null);
   const zipInputRef = useRef<HTMLInputElement>(null);
@@ -90,9 +92,22 @@ export const Settings: React.FC<SettingsProps> = ({
         <h2 className="text-base font-bold text-theme-text flex items-center gap-2">
           <span>⚙️</span> {t[lang].settings}
         </h2>
-        <span className="text-xs px-2 py-0.5 rounded bg-theme-header text-theme-accent font-mono font-semibold border border-theme-border">
-          CodeLert 7.0
-        </span>
+        <div className="flex items-center gap-2">
+          {onOpenOnboarding && (
+            <button
+              type="button"
+              onClick={onOpenOnboarding}
+              className="px-2.5 py-1 rounded bg-theme-accent/20 hover:bg-theme-accent/35 text-theme-accent text-xs font-semibold flex items-center gap-1.5 transition-colors border border-theme-accent/30"
+              title={lang === 'UA' ? 'Пройти початкове налаштування' : 'Start onboarding setup'}
+            >
+              <Sparkles size={13} />
+              <span>{lang === 'UA' ? 'Гід ШІ' : 'Tour'}</span>
+            </button>
+          )}
+          <span className="text-xs px-2 py-0.5 rounded bg-theme-header text-theme-accent font-mono font-semibold border border-theme-border">
+            CodeLert 7.0
+          </span>
+        </div>
       </div>
       
       <div className="space-y-5 text-xs sm:text-sm">
@@ -112,10 +127,11 @@ export const Settings: React.FC<SettingsProps> = ({
               onChange={(e) => setSettings({ ...settings, aiModel: e.target.value as any })}
               className="w-full bg-theme-header border border-theme-border text-theme-text rounded p-2 outline-none focus:border-theme-accent text-xs"
             >
-              <option value="auto">✨ {t[lang].modelAuto || 'Автоматичний вибір (Рекомендовано)'}</option>
-              <option value="gemini-3.5-flash">⚡ {t[lang].modelFlash || 'gemini-3.5-flash (Оптимальна + Google Search)'}</option>
-              <option value="gemini-3.1-flash-lite">🚀 {t[lang].modelLite || 'gemini-3.1-flash-lite (Швидка + економія токенів)'}</option>
-              <option value="gemini-3.1-pro-preview">🧠 {t[lang].modelPro || 'gemini-3.1-pro-preview (Потрібен Pro тариф)'}</option>
+              <option value="auto">✨ {t[lang].modelAuto || 'Автоматичний вибір (Рекомендовано - захист від квот)'}</option>
+              <option value="gemini-3.8-flash">⚡ {t[lang].modelFlash || 'gemini-3.8-flash (Швидка та збалансована)'}</option>
+              <option value="gemini-flash-latest">🚀 {t[lang].modelFlashLatest || 'gemini-flash-latest (Найновіша Flash)'}</option>
+              <option value="gemini-3.1-flash-lite">🔥 {t[lang].modelLite || 'gemini-3.1-flash-lite (Максимальна квота та швидкість)'}</option>
+              <option value="gemini-3.1-pro-preview">🧠 {t[lang].modelPro || 'gemini-3.1-pro-preview (Потрібен Pro / Платний тариф)'}</option>
             </select>
           </div>
 
@@ -133,7 +149,7 @@ export const Settings: React.FC<SettingsProps> = ({
             <div className="relative group/tooltip">
               <HelpCircle size={14} className="text-blue-400 hover:text-blue-300 transition-colors cursor-help" />
               <div className="absolute right-0 bottom-full mb-2 w-64 p-2.5 bg-theme-header text-theme-text text-xs rounded-md shadow-2xl opacity-0 group-hover/tooltip:opacity-100 pointer-events-none transition-opacity z-50 border border-theme-border leading-snug">
-                {t[lang].searchGroundingTooltip || 'ШІ використовує актуальні дані з інтернету через Google Search Grounding для надання найновішої інформації.'}
+                {t[lang].searchGroundingTooltip || 'ШІ використовує актуальні дані з інтернету через Google Search. Якщо квоту веб-пошуку вичерпано (429), система автоматично продовжує генерацію коду без переривань.'}
               </div>
             </div>
           </div>
@@ -322,37 +338,31 @@ export const Settings: React.FC<SettingsProps> = ({
             </div>
           </div>
           <select 
-            value={settings.contextMode || 'all'}
-            onChange={(e) => setSettings({ ...settings, contextMode: e.target.value as 'selected' | 'all' })}
-            className="w-full bg-theme-header border border-theme-border text-theme-text rounded p-2 outline-none focus:border-theme-accent text-xs"
+            value={settings.contextMode || 'adaptive'}
+            onChange={(e) => setSettings({ ...settings, contextMode: e.target.value as 'adaptive' | 'full' | 'selected' | 'all' })}
+            className="w-full bg-theme-header border border-theme-border text-theme-text rounded p-2 outline-none focus:border-theme-accent text-xs font-medium"
           >
-            <option value="all">{t[lang].contextModeAll}</option>
-            <option value="selected">{t[lang].contextModeSelected}</option>
+            <option value="adaptive">{lang === 'UA' ? '⚡ Адаптивний (Розумний вибір файлів ШІ)' : '⚡ Adaptive (AI smart file selection)'}</option>
+            <option value="full">{lang === 'UA' ? '📦 Повний (Вміст усіх файлів проекту)' : '📦 Full (All project files content)'}</option>
+            <option value="selected">{lang === 'UA' ? '🎯 Тільки обрані файли (Ручний вибір)' : '🎯 Selected files only (Manual)'}</option>
           </select>
         </div>
 
-        {/* Workspace Mode / Dead-zone elimination */}
+        {/* Workspace Mode / Information only */}
         <div className="p-3 bg-theme-panel rounded-lg border border-theme-border">
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify-between mb-1.5">
             <label className="block text-xs font-bold text-theme-muted uppercase tracking-wider">
               Робоча зона / Workspace
             </label>
-            <div className="relative group/tooltip">
-              <HelpCircle size={14} className="text-theme-muted hover:text-theme-accent transition-colors cursor-help" />
-              <div className="absolute right-0 bottom-full mb-2 w-60 p-2.5 bg-theme-header text-theme-text text-xs rounded-md shadow-2xl opacity-0 group-hover/tooltip:opacity-100 pointer-events-none transition-opacity z-50 border border-theme-border leading-snug">
-                Оптимізує робочий простір, усуваючи мертві зони та розширюючи область перегляду коду й чату на весь екран.
-              </div>
-            </div>
+            <span className="text-[10px] px-2 py-0.5 rounded bg-theme-accent/20 text-theme-accent font-bold">
+              {lang === 'UA' ? 'МАКСИМАЛЬНИЙ' : 'MAXIMAL'}
+            </span>
           </div>
-          <select 
-            value={settings.workspaceMode || 'wide'}
-            onChange={(e) => setSettings({ ...settings, workspaceMode: e.target.value as 'wide' | 'normal' | 'compact' })}
-            className="w-full bg-theme-header border border-theme-border text-theme-text rounded p-2 outline-none focus:border-theme-accent text-xs"
-          >
-            <option value="wide">Максимальний (100% ширина, без мертвих зон)</option>
-            <option value="normal">Стандартний (Адаптивний)</option>
-            <option value="compact">Компактний (Центрований)</option>
-          </select>
+          <p className="text-xs text-theme-muted leading-relaxed">
+            {lang === 'UA'
+              ? 'Робочий простір закріплено в максимальному режимі без мертвих зон для максимального огляду коду. Бічні панелі можна вільно згортати або розширювати, потягнувши мишею за їхні вертикальні межі за необхідності.'
+              : 'Workspace is fixed in maximal mode with zero dead zones for full code immersion. Sidebars can be freely resized by dragging their borders as needed.'}
+          </p>
         </div>
 
         {/* Dual Font Size Sliders (UI Font Size & Text/Code Font Size) */}
@@ -534,6 +544,32 @@ export const Settings: React.FC<SettingsProps> = ({
                 Код + Чат
               </span>
             </button>
+          </div>
+        </div>
+
+        {/* Logic Bible 7-Step Summary Card */}
+        <div className="p-3 bg-purple-950/20 rounded-lg border border-purple-500/30 space-y-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-bold text-purple-300 uppercase tracking-wider flex items-center gap-1.5">
+              <span>📖</span> {lang === 'UA' ? 'Біблія логіки відповідей ШІ' : 'AI Logic Bible'}
+            </h3>
+            <span className="text-[10px] bg-purple-500/30 text-purple-200 px-1.5 py-0.5 rounded font-bold">
+              7 {lang === 'UA' ? 'кроків' : 'steps'}
+            </span>
+          </div>
+          <p className="text-[11px] text-theme-muted leading-snug">
+            {lang === 'UA' 
+              ? 'Кожна генерація ШІ обов\'язково проходить 7 обов\'язкових етапів: від аналізу механік та структури до точкової заміни [REPLACE] та фінальної перевірки.'
+              : 'Every AI generation executes 7 mandatory steps: from mechanic analysis and tree inspection to targeted [REPLACE] and self-verification.'}
+          </p>
+          <div className="text-[11px] text-purple-200/90 font-mono space-y-0.5 pt-1 border-t border-purple-500/20">
+            <div>1. {lang === 'UA' ? 'Аналіз запитання користувача' : 'Prompt Analysis'}</div>
+            <div>2. {lang === 'UA' ? 'План механік та архітектури' : 'Mechanics & Architecture Plan'}</div>
+            <div>3. {lang === 'UA' ? 'Інтернет-пошук (Google Search)' : 'Google Search Grounding'}</div>
+            <div>4. {lang === 'UA' ? 'Аналіз структури та коду проекту' : 'Codebase Structure Inspection'}</div>
+            <div>5. {lang === 'UA' ? 'Виявлення подібних файлів' : 'Related Files Discovery'}</div>
+            <div>6. {lang === 'UA' ? 'Безпечна генерація (REPLACE / FILE)' : 'Safe Code Generation (REPLACE/FILE)'}</div>
+            <div>7. {lang === 'UA' ? 'Автоматична перевірка та валідація' : 'Automatic Self-Verification'}</div>
           </div>
         </div>
       </div>

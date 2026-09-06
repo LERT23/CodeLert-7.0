@@ -4,6 +4,7 @@ import { FileExplorer } from './components/FileExplorer.tsx';
 import { Chat } from './components/Chat.tsx';
 import { Settings } from './components/Settings.tsx';
 import { PreviewModal } from './components/PreviewModal.tsx';
+import { OnboardingModal } from './components/OnboardingModal.tsx';
 import { LoadingScreen } from './components/App/LoadingScreen.tsx';
 import { SnowEffect } from './components/App/SnowEffect.tsx';
 import { GiftSpawner } from './components/App/GiftSpawner.tsx';
@@ -35,6 +36,7 @@ const App: React.FC = () => {
   const [previewTempCode, setPreviewTempCode] = useState<{code: string, lang: string} | null>(null);
   const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   const [projectName, setProjectName] = useState('MyProject');
   const [files, setFiles] = useState<FileNode[]>([]);
@@ -47,7 +49,7 @@ const App: React.FC = () => {
     theme: 'brown',
     language: 'EN',
     fontFamily: '"Fira Code", monospace',
-    contextMode: 'all',
+    contextMode: 'adaptive',
     newYearMode: false,
     autoBackup: false,
     autoBackupInterval: 30,
@@ -55,7 +57,8 @@ const App: React.FC = () => {
     aiModeLineReplace: true,
     useCustomCursor: true,
     enableAnimations: true,
-    enableAiVerification: false
+    enableAiVerification: false,
+    workspaceMode: 'wide'
   });
 
   const filesRef = useRef(files);
@@ -72,7 +75,13 @@ const App: React.FC = () => {
       setLoadProgress(p);
       if (p >= 100) {
         clearInterval(interval);
-        setTimeout(() => setIsAppLoading(false), 200);
+        setTimeout(() => {
+          setIsAppLoading(false);
+          const completed = localStorage.getItem('codelert_onboarding_completed');
+          if (!completed) {
+            setShowOnboarding(true);
+          }
+        }, 200);
       }
     }, 30);
     return () => clearInterval(interval);
@@ -413,10 +422,18 @@ const App: React.FC = () => {
               onImportState={handleImportState}
               onImportZip={handleImportZip}
               lang={settings.language}
+              onOpenOnboarding={() => setShowOnboarding(true)}
             />
           </div>
         )}
       </div>
+
+      <OnboardingModal 
+        isOpen={showOnboarding}
+        onClose={() => setShowOnboarding(false)}
+        settings={settings}
+        setSettings={setSettings}
+      />
 
       {(previewFileId || previewTempCode) && (
         <PreviewModal 

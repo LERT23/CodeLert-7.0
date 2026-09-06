@@ -22,7 +22,7 @@ interface ChatProps {
   selectedFileIds: Set<string>;
   user: User | null;
   onAddTempFile: (filename: string, content: string) => void;
-  contextMode: 'selected' | 'all';
+  contextMode?: 'adaptive' | 'full' | 'selected' | 'all';
   settings: ThemeSettings;
 }
 
@@ -208,40 +208,111 @@ export const Chat: React.FC<ChatProps> = ({
     setAttachments(prev => prev.filter((_, i) => i !== index));
   };
 
-  const getContextFiles = (nodes: FileNode[], currentPath: string = ''): ContextFile[] => {
-    let result: ContextFile[] = [];
+  const flattenProjectFiles = (nodes: FileNode[], currentPath: string = ''): { node: FileNode; fullPath: string }[] => {
+    let result: { node: FileNode; fullPath: string }[] = [];
     nodes.forEach(node => {
       const fullPath = currentPath ? `${currentPath}/${node.name}` : node.name;
-      
       if (shouldIgnoreFile(fullPath)) return;
-
-      if (!node.isFolder && node.content) {
-        const isIncluded = contextMode === 'all' || (includeContext && selectedFileIds.has(node.id));
-        
-        if (isIncluded) {
-          if (node.content.startsWith('data:')) {
-            const { category } = getMimeTypeAndIsText(node.name);
-            if (category === 'excel') {
-               const text = parseExcelDataUrlToText(node.content);
-               result.push({ name: fullPath, content: text });
-            } else if (node.content.length < 1000000) { // ~750KB limit
-              result.push({ name: fullPath, content: node.content, isImage: true });
-            } else {
-              result.push({ name: fullPath, content: `[Зображення занадто велике для аналізу. Максимальний розмір ~750KB]` });
-            }
-          } else {
-            if (node.content.length < 3000000) { // Increased to 3M chars
-              result.push({ name: fullPath, content: node.content });
-            } else {
-              result.push({ name: fullPath, content: `[Файл занадто великий. Прочитано частково]\n${node.content.substring(0, 3000000)}...` });
-            }
-          }
-        }
+      if (!node.isFolder && node.content !== undefined) {
+        result.push({ node, fullPath });
       }
       if (node.isFolder && node.children) {
-        result = result.concat(getContextFiles(node.children, fullPath));
+        result = result.concat(flattenProjectFiles(node.children, fullPath));
       }
     });
+    return result;
+  };
+
+  const getAdaptiveContextFiles = (promptText: string): ContextFile[] => {
+    const allFiles = flattenProjectFiles(projectFiles);
+    if (allFiles.length === 0) return [];
+
+    const isFullMode = contextMode === 'full' || contextMode === 'all';
+    
+    // In Full mode, include all project files
+    if (isFullMode) {
+      return allFiles.map(({ node, fullPath }) => {
+        if (node.content && node.content.startsWith('data:')) {
+          const { category } = getMimeTypeAndIsText(node.name);
+          if (category === 'excel') {
+            return { name: fullPath, content: parseExcelDataUrlToText(node.content) };
+          }
+          return { name: fullPath, content: node.content, isImage: true };
+        }
+        return { name: fullPath, content: node.content || '' };
+      });
+    }
+
+    // In Adaptive mode:
+    const promptLower = promptText.toLowerCase();
+    
+    // Score each file to prioritize what the AI needs to inspect
+    const scoredFiles = allFiles.map(item => {
+      let score = 0;
+      const lowerPath = item.fullPath.toLowerCase();
+      const lowerName = item.node.name.toLowerCase();
+      const nameWithoutExt = lowerName.split('.')[0];
+
+      // A. User explicitly selected this file in UI
+      if (selectedFileIds.has(item.node.id)) {
+        score += 2000;
+      }
+
+      // B. Directly mentioned in prompt by full path or file name
+      if (promptLower.includes(lowerPath)) {
+        score += 1000;
+      } else if (promptLower.includes(lowerName)) {
+        score += 800;
+      } else if (nameWithoutExt.length > 2 && promptLower.includes(nameWithoutExt)) {
+        score += 500;
+      }
+
+      // C. Key architectural entry points get high baseline priority
+      if (['app.tsx', 'app.jsx', 'main.tsx', 'main.jsx', 'index.html', 'server.ts', 'types.ts', 'package.json'].includes(lowerName)) {
+        score += 300;
+      }
+
+      // D. Code files (.ts, .tsx, .js, .jsx, .py, .css, .html)
+      const ext = lowerName.split('.').pop() || '';
+      if (['ts', 'tsx', 'js', 'jsx', 'json', 'css', 'html', 'py', 'java', 'sql'].includes(ext)) {
+        score += 100;
+      }
+
+      const len = item.node.content ? item.node.content.length : 0;
+      if (len > 0 && len < 45000) {
+        score += 50;
+      }
+
+      return { ...item, score, length: len };
+    });
+
+    // Sort by score descending
+    scoredFiles.sort((a, b) => b.score - a.score);
+
+    // Budget up to 200,000 characters for adaptive context
+    const MAX_BUDGET = 200000;
+    let currentBudget = 0;
+    const result: ContextFile[] = [];
+
+    for (const item of scoredFiles) {
+      if (currentBudget >= MAX_BUDGET) break;
+      const { node, fullPath } = item;
+      if (node.content && node.content.startsWith('data:')) {
+        const { category } = getMimeTypeAndIsText(node.name);
+        if (category === 'excel') {
+          const text = parseExcelDataUrlToText(node.content);
+          currentBudget += text.length;
+          result.push({ name: fullPath, content: text });
+        } else if (node.content.length < 1000000) {
+          result.push({ name: fullPath, content: node.content, isImage: true });
+        }
+      } else {
+        const text = node.content || '';
+        currentBudget += text.length;
+        result.push({ name: fullPath, content: text });
+      }
+    }
+
     return result;
   };
 
@@ -291,12 +362,8 @@ export const Chat: React.FC<ChatProps> = ({
     let finalModelText = '';
 
     try {
-      let contextFiles: ContextFile[] = [];
-      let projectStructure = getProjectStructureString(projectFiles);
-      
-      if (contextMode === 'all' || includeContext) {
-        contextFiles = getContextFiles(projectFiles);
-      }
+      const projectStructure = getProjectStructureString(projectFiles);
+      const contextFiles: ContextFile[] = getAdaptiveContextFiles(userMessage.text);
 
       let editHistoryStr = '';
       const tempFolder = projectFiles.find(f => f.name === '.temp' && f.isFolder);
