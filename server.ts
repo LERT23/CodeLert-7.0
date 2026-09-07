@@ -54,16 +54,20 @@ function formatErrorMessage(error: any): string {
       return "Сервери Google Gemini тимчасово перевантажені (High Demand). Зачекайте кілька секунд і надішліть запит знову.";
     }
     if (raw.includes('429') || raw.includes('RESOURCE_EXHAUSTED') || raw.includes('quota') || raw.includes('Too Many Requests')) {
-      const match = raw.match(/retry in ([0-9]+(?:\.[0-9]+)?)s/i) || raw.match(/retryDelay["']?\s*:\s*["']?(\d+)/i);
+      const match = raw.match(/(?:retry (?:in|after)|wait|delay)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)\s*s/i) 
+                 || raw.match(/retryDelay["']?\s*:\s*["']?(\d+)/i);
       if (match && match[1]) {
         const secs = Math.ceil(parseFloat(match[1]));
-        return `Перевищено тимчасовий ліміт запитів безкоштовного тарифу (Free Tier Quota). Будь ласка, зачекайте ${secs} сек. (таймер активний нижче) або перемкніть модель на Gemini 3.1 Flash-Lite у Налаштуваннях.`;
+        return `Перевищено тимчасовий ліміт запитів безкоштовного тарифу (Free Tier Quota). Будь ласка, зачекайте ${secs} сек. (таймер відліку активний нижче) або перемкніть модель на Gemini 3.1 Flash-Lite.`;
       }
-      return "Перевищено тимчасовий ліміт запитів безкоштовного тарифу (Free Tier Quota). Будь ласка, зачекайте кілька секунд і натисніть 'Спробувати знову' або оберіть Gemini 3.1 Flash-Lite у Налаштуваннях.";
+      return "Перевищено тимчасовий ліміт запитів безкоштовного тарифу (Free Tier Quota). Будь ласка, зачекайте кілька секунд і натисніть 'Спробувати знову' або оберіть Gemini 3.1 Flash-Lite.";
     }
   }
   return String(raw || "Помилка з'єднання з ШІ.");
 }
+
+// In-memory tracking of models that recently experienced 429 quota exhaustion
+const quotaExhaustedModels = new Map<string, number>();
 
 async function generateStreamWithFallback(
   ai: GoogleGenAI, 
@@ -72,23 +76,31 @@ async function generateStreamWithFallback(
   enableSearch: boolean = true,
   onStatusUpdate?: (status: { step: string; detail: string }) => void
 ) {
-  // Define candidate models in prioritized order based on user selection
+  // Candidate models strictly using verified official Gemini aliases
   let candidateModels: string[];
   if (primaryModel === 'gemini-3.1-pro-preview') {
-    candidateModels = ['gemini-3.1-pro-preview', 'gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'];
+    candidateModels = ['gemini-3.1-pro-preview', 'gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
   } else if (primaryModel === 'gemini-3.1-flash-lite') {
-    candidateModels = ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.8-flash'];
+    candidateModels = ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.8-flash'];
   } else if (primaryModel === 'gemini-flash-latest') {
-    candidateModels = ['gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'];
-  } else if (primaryModel === 'gemini-3.6-flash') {
-    candidateModels = ['gemini-3.6-flash', 'gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3.1-flash-lite'];
+    candidateModels = ['gemini-flash-latest', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'];
   } else {
-    // Default 'auto' or 'gemini-3.8-flash'
-    candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'];
+    // Default 'auto' or 'gemini-3.8-flash' -> fallback smoothly to flash-lite, then flash-latest
+    candidateModels = ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
   }
 
-  // Remove duplicates while preserving order
+  // Deduplicate while maintaining preference order
   candidateModels = candidateModels.filter((m, idx, arr) => arr.indexOf(m) === idx);
+
+  // If a model is currently in quota cooldown, demote it behind active models
+  const now = Date.now();
+  candidateModels.sort((a, b) => {
+    const aExhausted = (quotaExhaustedModels.get(a) || 0) > now;
+    const bExhausted = (quotaExhaustedModels.get(b) || 0) > now;
+    if (aExhausted && !bExhausted) return 1;
+    if (!aExhausted && bExhausted) return -1;
+    return 0;
+  });
 
   let searchAllowed = enableSearch;
   let lastError: any = null;
@@ -107,11 +119,14 @@ async function generateStreamWithFallback(
 
   for (let mIdx = 0; mIdx < candidateModels.length; mIdx++) {
     const model = candidateModels[mIdx];
+    let modelExhausted = false;
 
     // For each model, first try with search (if enabled & not quota-exhausted), then without search
     const searchOptions = searchAllowed ? [true, false] : [false];
 
     for (const withSearch of searchOptions) {
+      if (modelExhausted) break;
+
       const configForModel: any = { ...configPayload.config };
       const tools: any[] = [];
       if (withSearch) {
@@ -125,72 +140,132 @@ async function generateStreamWithFallback(
         delete configForModel.toolConfig;
       }
 
-      for (let attempt = 1; attempt <= 2; attempt++) {
+      const maxAttempts = withSearch ? 1 : 2;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-          const stream = await ai.models.generateContentStream({
+          const rawStream = await ai.models.generateContentStream({
             ...configPayload,
             model,
             config: configForModel
           });
-          return { stream, modelUsed: model };
+
+          // Critical: Peek the first chunk to ensure the HTTP connection and quota verification succeeded
+          const iterator = rawStream[Symbol.asyncIterator]();
+          const firstResult = await iterator.next();
+
+          // Successfully obtained first chunk: clear any quota cooldown for this model
+          quotaExhaustedModels.delete(model);
+
+          // Wrap stream to yield the peeked chunk followed by remaining chunks
+          async function* wrappedStream() {
+            if (!firstResult.done && firstResult.value !== undefined) {
+              yield firstResult.value;
+            }
+            while (true) {
+              const res = await iterator.next();
+              if (res.done) break;
+              yield res.value;
+            }
+          }
+
+          return { stream: wrappedStream(), modelUsed: model };
         } catch (err: any) {
           lastError = err;
           const msg = String(err?.message || err || '');
           console.warn(`Model ${model} (search: ${withSearch}, attempt: ${attempt}) notice:`, msg.substring(0, 180));
 
-          // If Google Search was enabled and failed with 429 quota, immediately disable search and try without search
-          if (withSearch && (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota'))) {
-            searchAllowed = false;
-            onStatusUpdate?.({ 
-              step: 'searching', 
-              detail: 'Квоту Google Search вичерпано. Перемикання на генерацію без веб-пошуку...' 
-            });
-            break; // Break attempt loop to move to withSearch = false
-          }
+          // 1. Check if the error is specifically a model-level token or request quota limit
+          const isModelTokenQuota = msg.includes('generate_content_tokens') ||
+                                    msg.includes('generate_requests') ||
+                                    msg.includes('PerDay') ||
+                                    (msg.includes('model:') && (msg.includes('quota') || msg.includes('RESOURCE_EXHAUSTED')));
 
-          // If Pro model on free tier (limit: 0 or quota), immediately jump to flash model
-          if (model === 'gemini-3.1-pro-preview' && (msg.includes('limit: 0') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429'))) {
-            onStatusUpdate?.({ 
-              step: 'thinking', 
-              detail: 'gemini-3.1-pro-preview потребує платного тарифу. Перехід на Gemini Flash...' 
-            });
-            break;
-          }
-
-          // Check retry delay
-          const match = msg.match(/retry in ([0-9]+(?:\.[0-9]+)?)s/i) || msg.match(/retryDelay["']?\s*:\s*["']?(\d+)/i);
-          const retrySecs = match && match[1] ? parseFloat(match[1]) : 0;
-
-          // If brief delay <= 2s and first attempt, back off and retry
-          if (retrySecs > 0 && retrySecs <= 2 && attempt < 2) {
-            await sleep(Math.ceil(retrySecs * 1000) + 200);
-            continue;
-          }
-
-          // If 429 quota exhaustion on this model, inform user and advance to next candidate model
-          if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429') || msg.includes('PerDay')) {
+          if (isModelTokenQuota) {
+            modelExhausted = true;
+            quotaExhaustedModels.set(model, Date.now() + 60_000); // 60s cooldown
             if (mIdx < candidateModels.length - 1) {
               const nextModel = candidateModels[mIdx + 1];
               onStatusUpdate?.({ 
                 step: 'thinking', 
-                detail: `Модель ${model} тимчасово досягла ліміту. Перемикання на ${nextModel}...` 
+                detail: `Модель ${model} досягла ліміту квоти токенів. Автоматичне перемикання на ${nextModel}...` 
               });
+              await sleep(300);
+            }
+            break; // Skip further attempts and proceed to next candidate model
+          }
+
+          // 2. If Google Search was enabled and hit search-specific quota (429), disable search and try without search
+          if (withSearch && (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota'))) {
+            searchAllowed = false;
+            onStatusUpdate?.({ 
+              step: 'searching', 
+              detail: 'Квоту Google Search вичерпано. Перемикання на пряму генерацію без веб-пошуку...' 
+            });
+            break; // Break attempt loop to proceed to withSearch = false for this model
+          }
+
+          // 3. If 503 (High Demand / Overloaded): immediately switch to next candidate model
+          if (msg.includes('503') || msg.includes('high demand') || msg.includes('UNAVAILABLE')) {
+            if (mIdx < candidateModels.length - 1) {
+              const nextModel = candidateModels[mIdx + 1];
+              onStatusUpdate?.({ 
+                step: 'thinking', 
+                detail: `Модель ${model} тимчасово перевантажена (503). Автоматичне перемикання на ${nextModel}...` 
+              });
+            }
+            modelExhausted = true;
+            break;
+          }
+
+          // 4. If Pro model on free tier (limit: 0 or quota), immediately jump to flash model
+          if (model === 'gemini-3.1-pro-preview' && (msg.includes('limit: 0') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429'))) {
+            if (mIdx < candidateModels.length - 1) {
+              const nextModel = candidateModels[mIdx + 1];
+              onStatusUpdate?.({ 
+                step: 'thinking', 
+                detail: `gemini-3.1-pro-preview потребує платного тарифу. Перехід на ${nextModel}...` 
+              });
+            }
+            modelExhausted = true;
+            break;
+          }
+
+          // 5. Check retry delay from Google API error message
+          const match = msg.match(/(?:retry (?:in|after)|wait|delay)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)\s*s/i) 
+                     || msg.match(/retryDelay["']?\s*:\s*["']?(\d+)/i);
+          const retrySecs = match && match[1] ? parseFloat(match[1]) : 0;
+
+          // If brief delay <= 2s and first attempt without search, back off and retry once
+          if (retrySecs > 0 && retrySecs <= 2 && attempt < maxAttempts) {
+            await sleep(Math.ceil(retrySecs * 1000) + 300);
+            continue;
+          }
+
+          // 6. General 429 quota exhaustion on this model:
+          if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429') || msg.includes('quota')) {
+            modelExhausted = true;
+            quotaExhaustedModels.set(model, Date.now() + 60_000);
+            if (mIdx < candidateModels.length - 1) {
+              const nextModel = candidateModels[mIdx + 1];
+              onStatusUpdate?.({ 
+                step: 'thinking', 
+                detail: `Модель ${model} досягла тимчасового ліміту квоти. Перемикання на ${nextModel}...` 
+              });
+              await sleep(400);
             }
             break;
           }
 
-          const isTransient = msg.includes('503') || msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('Too Many Requests');
-          if (isTransient && attempt < 2) {
-            await sleep(600 * attempt + Math.floor(Math.random() * 200));
+          const isTransient = msg.includes('Too Many Requests');
+          if (isTransient && attempt < maxAttempts) {
+            await sleep(800 * attempt);
             continue;
           }
+
+          modelExhausted = true;
           break;
         }
-      }
-
-      // If we broke out due to Pro model quota, stop trying other search options for this model
-      if (model === 'gemini-3.1-pro-preview' && lastError && String(lastError.message).includes('429')) {
-        break;
       }
     }
   }
@@ -326,8 +401,9 @@ app.post('/api/gemini/stream', async (req, res) => {
     if (contextFiles.length > 0) {
       systemInstruction += '\n\nОсь поточний контекст проекту (вміст файлів):\n';
       let totalContextChars = 0;
-      const MAX_TOTAL_CONTEXT = 220000;
-      const MAX_FILE_CHARS = 35000;
+      // Budget context to prevent 250k tokens/min TPM quota exhaustion
+      const MAX_TOTAL_CONTEXT = 95000;
+      const MAX_FILE_CHARS = 18000;
 
       for (const f of contextFiles) {
         if (totalContextChars >= MAX_TOTAL_CONTEXT) {
@@ -353,7 +429,7 @@ app.post('/api/gemini/stream', async (req, res) => {
           let fileText = String(f.content || '');
           if (fileText.length > MAX_FILE_CHARS) {
             // Keep head and tail of file for context
-            fileText = fileText.slice(0, 16000) + '\n\n... [частину коду пропущено для економії токенів ШІ] ...\n\n' + fileText.slice(-16000);
+            fileText = fileText.slice(0, 8000) + '\n\n... [частину коду пропущено для економії токенів ШІ] ...\n\n' + fileText.slice(-8000);
           }
           const remainingBudget = MAX_TOTAL_CONTEXT - totalContextChars;
           if (fileText.length > remainingBudget) {
@@ -451,10 +527,8 @@ app.post('/api/gemini/stream', async (req, res) => {
       chosenModel = 'gemini-3.1-flash-lite';
     } else if (settings?.aiModel === 'gemini-flash-latest') {
       chosenModel = 'gemini-flash-latest';
-    } else if (settings?.aiModel === 'gemini-3.6-flash') {
-      chosenModel = 'gemini-3.6-flash';
     } else {
-      // Auto selection uses gemini-3.8-flash by default (with auto-fallback to flash-latest & lite)
+      // Auto selection uses gemini-3.8-flash by default (with auto-fallback to flash-lite & flash-latest)
       chosenModel = 'gemini-3.8-flash';
     }
 
@@ -615,12 +689,14 @@ app.post('/api/gemini/stream', async (req, res) => {
     res.end();
   } catch (error: any) {
     const rawMsg = String(error?.message || error || '');
-    const match = rawMsg.match(/retry in ([0-9]+(?:\.[0-9]+)?)s/i) || rawMsg.match(/retryDelay["']?\s*:\s*["']?(\d+)/i);
+    const match = rawMsg.match(/(?:retry (?:in|after)|wait|delay)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)\s*s/i) 
+               || rawMsg.match(/retryDelay["']?\s*:\s*["']?(\d+)/i);
     const retrySecs = match && match[1] ? Math.ceil(parseFloat(match[1])) : undefined;
     const errMsg = formatErrorMessage(error);
     console.warn('Gemini Stream quota/connection notice:', errMsg);
+    const statusCode = (rawMsg.includes('429') || rawMsg.includes('RESOURCE_EXHAUSTED') || rawMsg.includes('quota')) ? 429 : 500;
     if (!res.headersSent) {
-      res.status(500).json({ error: errMsg, retryAfter: retrySecs });
+      res.status(statusCode).json({ error: errMsg, retryAfter: retrySecs });
     } else {
       res.write(`data: ${JSON.stringify({ error: errMsg, retryAfter: retrySecs })}\n\n`);
       res.end();
@@ -636,7 +712,7 @@ app.post('/api/gemini/upscale', async (req, res) => {
       return res.status(400).json({ error: 'base64Data is required' });
     }
     const ai = getAi();
-    const models = ['gemini-3.7-flash', 'gemini-flash-latest'];
+    const models = ['gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image'];
     let lastError: any = null;
 
     for (const model of models) {

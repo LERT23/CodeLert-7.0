@@ -57,7 +57,7 @@ export interface ThemeSettings {
   theme: ThemeColor;
   language: 'UA' | 'EN';
   fontFamily: string;
-  aiModel?: 'auto' | 'gemini-3.8-flash' | 'gemini-flash-latest' | 'gemini-3.6-flash' | 'gemini-3.1-flash-lite' | 'gemini-3.1-pro-preview' | 'gemini-3.5-flash';
+  aiModel?: 'auto' | 'gemini-3.8-flash' | 'gemini-flash-latest' | 'gemini-3.1-flash-lite' | 'gemini-3.1-pro-preview';
   enableSearchGrounding?: boolean;
   contextMode?: 'adaptive' | 'full' | 'selected' | 'all';
   newYearMode?: boolean;

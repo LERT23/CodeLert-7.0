@@ -66,12 +66,19 @@ export const generateChatStreamResponse = async function* (
     if (!response.ok) {
       const errText = await response.text();
       let parsedErr = '';
+      let parsedRetryAfter: number | undefined;
       try {
-        parsedErr = JSON.parse(errText).error;
+        const parsed = JSON.parse(errText);
+        parsedErr = parsed.error;
+        parsedRetryAfter = parsed.retryAfter;
       } catch {
         parsedErr = errText;
       }
-      throw new Error(parsedErr || `Request failed with status ${response.status}`);
+      yield {
+        error: parsedErr || `Request failed with status ${response.status}`,
+        retryAfter: parsedRetryAfter
+      };
+      return;
     }
 
     const reader = response.body?.getReader();
